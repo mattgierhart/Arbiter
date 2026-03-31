@@ -158,76 +158,211 @@ function detectHumanNeeded(
 }
 
 /**
- * Synthesize a precise, minimal human ask from the readiness issues.
+ * Synthesize a precise, minimal human ask from readiness issues, hand-off section,
+ * and preconditions. Produces a single actionable sentence where possible.
  */
 function synthesizeHumanAsk(
 	task: ParsedTask,
 	readiness: ReadinessResult
 ): string | undefined {
-	const asks: string[] = [];
+	const allIssues = [...readiness.blockedDimensions, ...readiness.partialDimensions];
 
-	// Authority/access issues first
-	const authorityIssue = [...readiness.blockedDimensions, ...readiness.partialDimensions].find(
-		(d) => d.dimension === "authority"
-	);
-	if (authorityIssue) {
-		if (task.needsMattReview) {
-			asks.push("Please confirm approval to proceed with this task.");
-		}
-		if (authorityIssue.blockerType === "access") {
-			// Extract what access is needed from preconditions
-			const accessPreconditions = (task.sections.preconditions ?? [])
-				.filter((p) => !p.checked)
-				.filter((p) => {
-					const lower = p.text.toLowerCase();
-					return (
-						lower.includes("access") ||
-						lower.includes("approval") ||
-						lower.includes("confirm") ||
-						lower.includes("billing") ||
-						lower.includes("permission")
-					);
-				})
-				.map((p) => p.text);
-			if (accessPreconditions.length > 0) {
-				asks.push(`Needed: ${accessPreconditions.join("; ")}.`);
-			}
-		}
-		if (authorityIssue.blockerType === "risk") {
-			asks.push(
-				`This task involves sensitive operations. Please confirm it is safe to proceed.`
+	// Mine the Hand-off section for what Matt should do
+	const handoffAction = extractHandoffAsk(task);
+
+	// Mine unchecked human-gated preconditions
+	const humanPreconditions = (task.sections.preconditions ?? [])
+		.filter((p) => !p.checked)
+		.filter((p) => {
+			const lower = p.text.toLowerCase();
+			return ["approval", "confirm", "matt", "review", "access", "billing", "permission"].some(
+				(kw) => lower.includes(kw)
 			);
+		})
+		.map((p) => p.text);
+
+	const authorityIssue = allIssues.find((d) => d.dimension === "authority");
+
+	// Build the ask — prioritize hand-off section (most specific), then preconditions
+	if (handoffAction && task.needsMattReview) {
+		// Hand-off section has the most context-specific ask
+		const afterAsk = getAgentFollowUp(task);
+		if (afterAsk) {
+			return `${handoffAction} If confirmed, I'll ${afterAsk}.`;
 		}
+		return handoffAction;
+	}
+
+	if (task.needsMattReview) {
+		const afterAsk = getAgentFollowUp(task);
+		if (humanPreconditions.length > 0) {
+			const needed = humanPreconditions.join("; ");
+			if (afterAsk) {
+				return `Please confirm approval (needed: ${needed}). If yes, I'll ${afterAsk}.`;
+			}
+			return `Please confirm approval. Needed: ${needed}.`;
+		}
+		if (afterAsk) {
+			return `Please confirm approval to proceed. If yes, I'll ${afterAsk}.`;
+		}
+		return "Please confirm approval to proceed with this task.";
+	}
+
+	if (authorityIssue?.blockerType === "access") {
+		if (humanPreconditions.length > 0) {
+			return `Needed from Matt: ${humanPreconditions.join("; ")}.`;
+		}
+		return "Access or permission is required to proceed. Please provide or confirm.";
+	}
+
+	if (authorityIssue?.blockerType === "risk") {
+		return "This task involves sensitive operations. Please confirm it is safe to proceed.";
 	}
 
 	// Clarity issues
-	const clarityIssue = [...readiness.blockedDimensions, ...readiness.partialDimensions].find(
-		(d) => d.dimension === "clarity"
-	);
-	if (clarityIssue && asks.length === 0) {
-		asks.push(
-			`Please clarify the task: add a clear title, expected outcome, and either execution steps or a research question.`
-		);
+	const clarityIssue = allIssues.find((d) => d.dimension === "clarity");
+	if (clarityIssue) {
+		return "Please clarify the task: add a clear title, expected outcome, and either execution steps or a research question.";
 	}
 
-	// Context issues — only if no higher-priority asks
-	if (asks.length === 0) {
-		const contextIssue = [...readiness.blockedDimensions, ...readiness.partialDimensions].find(
-			(d) => d.dimension === "context"
+	// Context issues — lowest priority
+	const contextIssue = allIssues.find((d) => d.dimension === "context");
+	if (contextIssue) {
+		const unchecked = (task.sections.preconditions ?? [])
+			.filter((p) => !p.checked)
+			.map((p) => p.text);
+		if (unchecked.length > 0) {
+			return `Unresolved preconditions: ${unchecked.join("; ")}.`;
+		}
+		return contextIssue.reason;
+	}
+
+	return undefined;
+}
+
+/**
+ * Extract the human ask from the ## Hand-off section.
+ * Prefers nested/indented action lines over scaffolding/question lines.
+ */
+function extractHandoffAsk(task: ParsedTask): string | undefined {
+	if (!task.sections.handoff) return undefined;
+
+	const lines = task.sections.handoff.split("\n");
+
+	// Skip scaffolding patterns
+	const isScaffolding = (s: string): boolean => {
+		const lower = s.toLowerCase();
+		return (
+			lower.includes("what exactly should") ||
+			lower.includes("what should") ||
+			lower.includes("if matt executes next") ||
+			lower.includes("if matt does next") ||
+			lower.includes("if matt handles next") ||
+			lower.endsWith("?") ||
+			s.startsWith("#")
 		);
-		if (contextIssue) {
-			const unchecked = (task.sections.preconditions ?? [])
-				.filter((p) => !p.checked)
-				.map((p) => p.text);
-			if (unchecked.length > 0) {
-				asks.push(`Unresolved preconditions: ${unchecked.join("; ")}.`);
-			} else {
-				asks.push(contextIssue.reason);
+	};
+
+	// First pass: look for nested/indented bullet lines (the actual actionable items)
+	for (const line of lines) {
+		// Indented bullets (2+ spaces or tab before - or *)
+		const nestedMatch = line.match(/^[\t ]{2,}[-*]\s+(.+)/);
+		if (nestedMatch) {
+			const action = nestedMatch[1].trim();
+			if (action.length > 5 && !isScaffolding(action)) {
+				return `Please ${action.charAt(0).toLowerCase()}${action.slice(1)}${action.endsWith(".") ? "" : "."}`;
 			}
 		}
 	}
 
-	return asks.length > 0 ? asks.join(" ") : undefined;
+	// Second pass: look for any non-scaffolding, non-question line
+	for (const line of lines) {
+		const trimmed = line.replace(/^[\t ]*[-*]\s*/, "").trim();
+		if (trimmed.length > 10 && !isScaffolding(trimmed)) {
+			return trimmed.endsWith(".") ? trimmed : trimmed + ".";
+		}
+	}
+
+	// Third pass: handle "If Matt executes next, do X" where the action is on the same line
+	for (const line of lines) {
+		const trimmed = line.replace(/^[\t ]*[-*]\s*/, "").trim();
+		const mattMatch = trimmed.match(/if matt (?:executes|does|handles) next[,:]?\s*(.+)/i);
+		if (mattMatch) {
+			const action = mattMatch[1].trim();
+			if (!action.endsWith("?") && action.length > 5) {
+				return `Please ${action.charAt(0).toLowerCase()}${action.slice(1)}${action.endsWith(".") ? "" : "."}`;
+			}
+		}
+	}
+
+	return undefined;
+}
+
+/**
+ * Get what the agent will do after the human unblocks — for contextual asks.
+ */
+function getAgentFollowUp(task: ParsedTask): string | undefined {
+	// First unchecked non-human-gated execution step
+	const steps = task.sections.executionSteps ?? [];
+	const agentSteps = steps
+		.filter((s) => !s.checked)
+		.filter((s) => {
+			const lower = s.text.toLowerCase();
+			return !["approval", "billing", "matt", "permission"].some((kw) => lower.includes(kw));
+		});
+
+	if (agentSteps.length > 0) {
+		const first = agentSteps[0].text;
+		return first.charAt(0).toLowerCase() + first.slice(1);
+	}
+
+	// Fall back to outcome
+	if (task.sections.outcome) {
+		const firstLine = task.sections.outcome.split("\n")[0].replace(/^[-*]\s*/, "").trim();
+		if (firstLine.length > 10) {
+			return firstLine.charAt(0).toLowerCase() + firstLine.slice(1);
+		}
+	}
+
+	return undefined;
+}
+
+/**
+ * Format the reason field with primary + secondary blocker structure.
+ */
+function formatReason(readiness: ReadinessResult): string {
+	const allIssues = [
+		...readiness.blockedDimensions,
+		...readiness.partialDimensions,
+	];
+
+	if (allIssues.length === 0) return "All readiness dimensions are satisfied.";
+
+	// Sort by priority
+	const sorted = [...allIssues].sort((a, b) => {
+		const aPri = BLOCKER_PRIORITY.indexOf(a.blockerType ?? "none");
+		const bPri = BLOCKER_PRIORITY.indexOf(b.blockerType ?? "none");
+		if (aPri !== bPri) return aPri - bPri;
+		if (a.state === "blocked" && b.state !== "blocked") return -1;
+		if (b.state === "blocked" && a.state !== "blocked") return 1;
+		return 0;
+	});
+
+	const primary = sorted[0];
+	const secondary = sorted.slice(1);
+
+	const primaryText = primary.reason.replace(/\.+$/, "");
+	let reason = `Primary: ${primary.dimension} — ${primaryText}.`;
+	if (secondary.length > 0) {
+		// Limit to top 2 secondary reasons to reduce noise
+		const topSecondary = secondary.slice(0, 2);
+		const secondaryText = topSecondary
+			.map((d) => `${d.dimension}: ${d.reason.replace(/\.+$/, "")}`)
+			.join("; ");
+		reason += ` Also: ${secondaryText}.`;
+	}
+
+	return reason;
 }
 
 /**
@@ -370,12 +505,11 @@ export function selectAction(
 	const confidence = determineConfidence(readiness);
 	const needsHuman = detectHumanNeeded(task, readiness, action);
 
-	// Build the reason from all non-ready dimensions
 	const allIssues = [
 		...readiness.blockedDimensions,
 		...readiness.partialDimensions,
 	];
-	const reason = allIssues.map((d) => `${d.dimension}: ${d.reason}`).join("; ");
+	const reason = formatReason(readiness);
 
 	const record: ActionRecord = {
 		action,
