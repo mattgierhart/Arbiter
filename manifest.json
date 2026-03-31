@@ -3,7 +3,7 @@
 	"name": "Arbiter — Agent Action Orchestration",
 	"version": "0.1.0",
 	"minAppVersion": "1.0.0",
-	"description": "A decision protocol that helps AI agents determine, declare, and record their best next action for any task.",
+	"description": "A structured decision protocol for AI agents. Assesses task readiness, selects from 7 action types (Execute, Ask, Decompose, Wait, Escalate...), and writes visible assessments into your notes. No API keys needed — runs locally, all state is plain markdown.",
 	"author": "Matt Gierhart",
 	"authorUrl": "https://github.com/mattgierhart",
 	"isDesktopOnly": false
