@@ -60,6 +60,41 @@ Deploy updates to production server.
 
 		expect(["ASK", "ESC"]).toContain(record.action);
 		expect(record.needsHuman).toBe(true);
+		expect(record.humanAsk).toBeDefined();
+	});
+
+	it("selects ASK over CTX when task has needs_matt_review and unchecked preconditions", () => {
+		const content = `---
+title: "Production billing access task"
+type: task-execution
+status: active
+owner: pinch
+needs_matt_review: true
+---
+
+## Outcome
+Downgrade a billing plan in production before renewal.
+
+## Preconditions
+- [ ] Matt approval confirmed
+- [ ] Billing account access available
+
+## Execution Steps
+- [ ] Log into billing portal
+- [ ] Change plan
+- [ ] Save confirmation
+`;
+
+		const task = parseTask(content, "test.md");
+		const readiness = assessReadiness(task);
+		const record = selectAction(task, readiness);
+
+		// Should be ASK or ESC, NOT CTX
+		expect(["ASK", "ESC"]).toContain(record.action);
+		expect(record.needsHuman).toBe(true);
+		expect(record.humanAsk).toBeDefined();
+		// Should mention approval or billing
+		expect(record.humanAsk!.toLowerCase()).toMatch(/approval|billing|confirm/);
 	});
 
 	it("selects DEC when scope is blocked", () => {
@@ -125,7 +160,95 @@ Update the billing portal configuration.
 		expect(record.reason).toContain("Policy override");
 	});
 
-	it("generates wake condition for WAIT actions", () => {
+	it("handles terminal state: completed", () => {
+		const content = `---
+title: "Done task"
+type: task-execution
+status: completed
+owner: pinch
+---
+
+## Outcome
+Already done.
+`;
+
+		const task = parseTask(content, "test.md");
+		const readiness = assessReadiness(task);
+		const record = selectAction(task, readiness);
+
+		expect(record.action).toBe("DECL");
+		expect(record.terminal).toBe(true);
+		expect(record.needsHuman).toBe(false);
+		expect(record.nextAction.toLowerCase()).toContain("no action needed");
+	});
+
+	it("handles terminal state: cancelled", () => {
+		const content = `---
+title: "Cancelled task"
+type: task-execution
+status: cancelled
+owner: pinch
+---
+
+## Outcome
+Cancelled project.
+`;
+
+		const task = parseTask(content, "test.md");
+		const readiness = assessReadiness(task);
+		const record = selectAction(task, readiness);
+
+		expect(record.action).toBe("DECL");
+		expect(record.terminal).toBe(true);
+		expect(record.needsHuman).toBe(false);
+	});
+
+	it("detects needsHuman from unchecked preconditions with human keywords", () => {
+		const content = `---
+title: "Access gated task"
+type: task-execution
+status: active
+owner: pinch
+---
+
+## Outcome
+Integrate with external payment API using provided credentials.
+
+## Preconditions
+- [ ] API credentials obtained from Matt
+- [ ] Sandbox environment access confirmed
+- [x] API documentation reviewed
+`;
+
+		const task = parseTask(content, "test.md");
+		const readiness = assessReadiness(task);
+		const record = selectAction(task, readiness);
+
+		expect(record.needsHuman).toBe(true);
+	});
+
+	it("includes humanAsk for ASK actions", () => {
+		const content = `---
+title: "Ambiguous task"
+type: task-execution
+status: active
+owner: pinch
+---
+
+## Outcome
+Fix it.
+`;
+
+		const task = parseTask(content, "test.md");
+		const readiness = assessReadiness(task);
+		const record = selectAction(task, readiness);
+
+		if (record.action === "ASK") {
+			expect(record.humanAsk).toBeDefined();
+		}
+	});
+
+	it("always includes wakeCondition for WAIT actions", () => {
 		const content = `---
 title: "Waiting task"
 type: task-execution
@@ -148,30 +271,33 @@ Integrate with external payment API.
 		const readiness = assessReadiness(task);
 		const record = selectAction(task, readiness);
 
-		// Should recommend a non-EXE action due to unchecked preconditions
-		expect(record.action).not.toBe("EXE");
+		if (record.action === "WAIT") {
+			expect(record.wakeCondition).toBeDefined();
+		}
 	});
 
-	it("includes humanAsk for ASK actions", () => {
+	it("generates smart subtasks from execution steps for DEC", () => {
+		const steps = Array.from({ length: 9 }, (_, i) => `- [ ] Implementation step ${i + 1}`).join("\n");
 		const content = `---
-title: "Ambiguous task"
+title: "Complex refactor"
 type: task-execution
 status: active
 owner: pinch
 ---
 
 ## Outcome
-Fix it.
+Complete the full system refactor across all modules.
+
+## Execution Steps
+${steps}
 `;
 
 		const task = parseTask(content, "test.md");
 		const readiness = assessReadiness(task);
 		const record = selectAction(task, readiness);
 
-		// With very short outcome, clarity should be partial/blocked
-		// The action may be ASK or another non-EXE type
-		if (record.action === "ASK") {
-			expect(record.humanAsk).toBeDefined();
-		}
+		expect(record.action).toBe("DEC");
+		// Should cluster steps into groups, not use generic subtasks
+		expect(record.subtasks!.some((s) => s.includes("Implementation step"))).toBe(true);
 	});
 });

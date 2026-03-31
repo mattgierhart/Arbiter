@@ -60,6 +60,22 @@ describe("formatAssessmentBlock", () => {
 		expect(block).toContain("- [ ] Analyze scope");
 		expect(block).toContain("- [ ] Create subtask notes");
 	});
+
+	it("formats terminal records correctly", () => {
+		const terminalRecord: ActionRecord = {
+			...SAMPLE_RECORD,
+			action: "DECL",
+			terminal: true,
+			reason: "Task is already completed.",
+			nextAction: "No action needed — task is already completed.",
+			needsHuman: false,
+		};
+
+		const block = formatAssessmentBlock(terminalRecord);
+		expect(block).toContain("Terminal");
+		expect(block).toContain("no further action required");
+		expect(block).toContain("**Human input needed**: no");
+	});
 });
 
 describe("formatFrontmatterFields", () => {

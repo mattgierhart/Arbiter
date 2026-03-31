@@ -55,7 +55,26 @@ export interface ActionRecord {
 	humanAsk?: string;
 	wakeCondition?: string;
 	subtasks?: string[];
+	terminal?: boolean;
 }
+
+/**
+ * Blocker priority order: higher-priority blockers override lower ones.
+ * Authority/access/risk issues should outrank missing-context because
+ * human-gated tasks need ASK/ESC, not CTX.
+ */
+export const BLOCKER_PRIORITY: BlockerType[] = [
+	"policy",       // highest — hard constraints
+	"risk",         // safety/escalation
+	"access",       // needs human to grant
+	"capability",   // agent can't do it
+	"dependency",   // waiting on external
+	"time",         // temporal constraint
+	"ambiguity",    // needs clarification
+	"scope",        // too broad
+	"missing-context", // lowest — agent can self-serve
+	"none",
+];
 
 /** Parsed task from a note's frontmatter + body */
 export interface ParsedTask {

@@ -5,15 +5,23 @@ import { ACTION_LABELS } from "./types";
  * Format an ActionRecord as a markdown assessment block.
  */
 export function formatAssessmentBlock(record: ActionRecord): string {
+	const actionLabel = record.terminal
+		? `${record.action} (Terminal — ${record.reason})`
+		: `${record.action} (${ACTION_LABELS[record.action]})`;
+
 	const lines: string[] = [
 		"## Agent Assessment",
-		`- **Action**: ${record.action} (${ACTION_LABELS[record.action]})`,
+		`- **Action**: ${actionLabel}`,
 		`- **Confidence**: ${record.confidence}`,
 		`- **Recommended next action**: ${record.nextAction}`,
 		`- **Why**: ${record.reason}`,
 		`- **Blocker type**: ${record.blockerType}`,
 		`- **Human input needed**: ${record.needsHuman ? "yes" : "no"}`,
 	];
+
+	if (record.terminal) {
+		lines.push("- **Terminal**: yes — no further action required");
+	}
 
 	if (record.humanAsk) {
 		lines.push(`- **Human ask**: ${record.humanAsk}`);
@@ -48,6 +56,10 @@ export function formatFrontmatterFields(
 		[`${prefix}needs_human`]: record.needsHuman,
 		[`${prefix}last_assessed`]: record.lastAssessed,
 	};
+
+	if (record.terminal) {
+		fields[`${prefix}terminal`] = true;
+	}
 
 	if (record.wakeCondition) {
 		fields[`${prefix}wake_condition`] = record.wakeCondition;
