@@ -51,8 +51,21 @@ function assessContext(task: ParsedTask): ReadinessDimension {
 	// In the plugin, we'd check via the Obsidian API. For now, we note them.
 
 	// Check if preconditions exist but are unchecked
+	// Separate human-gated preconditions from self-servable ones
+	const humanKeywords = ["approval", "confirm", "matt", "review", "access", "billing", "permission", "tier"];
+	let humanBlockedPreconditions: string[] = [];
+	let agentBlockedPreconditions: string[] = [];
+
 	if (task.sections.preconditions) {
 		const unchecked = task.sections.preconditions.filter((p) => !p.checked);
+		for (const p of unchecked) {
+			const lower = p.text.toLowerCase();
+			if (humanKeywords.some((kw) => lower.includes(kw))) {
+				humanBlockedPreconditions.push(p.text);
+			} else {
+				agentBlockedPreconditions.push(p.text);
+			}
+		}
 		if (unchecked.length > 0) {
 			issues.push(
 				`${unchecked.length} unchecked precondition(s): ${unchecked.map((p) => p.text).join(", ")}`
@@ -82,11 +95,18 @@ function assessContext(task: ParsedTask): ReadinessDimension {
 		  task.sections.preconditions.length
 		: false;
 
+	// If the primary blockers are human-gated, use "access" blocker type
+	// so the priority system routes to ASK instead of CTX
+	const blockerType = humanBlockedPreconditions.length > 0 &&
+		humanBlockedPreconditions.length >= agentBlockedPreconditions.length
+		? "access" as const
+		: "missing-context" as const;
+
 	return {
 		dimension: "context",
 		state: isBlocked ? "blocked" : "partial",
 		reason: issues.join("; "),
-		blockerType: "missing-context",
+		blockerType,
 	};
 }
 
@@ -160,7 +180,8 @@ function assessAuthority(task: ParsedTask): ReadinessDimension {
 		}
 	}
 
-	// Check for risk indicators in the task
+	// Check for risk indicators — only in title and execution steps (not full body).
+	// Research notes discuss these topics without meaning the agent should do them.
 	const riskKeywords = [
 		"delete",
 		"remove",
@@ -169,13 +190,15 @@ function assessAuthority(task: ParsedTask): ReadinessDimension {
 		"payment",
 		"production",
 		"deploy",
-		"publish",
 	];
-	const bodyLower = task.bodyContent.toLowerCase();
 	const titleLower = task.title.toLowerCase();
-	const combined = bodyLower + " " + titleLower;
+	// Build action-context text from title + execution steps only
+	const execStepText = (task.sections.executionSteps ?? [])
+		.map((s) => s.text.toLowerCase())
+		.join(" ");
+	const actionContext = titleLower + " " + execStepText;
 
-	const foundRisks = riskKeywords.filter((kw) => combined.includes(kw));
+	const foundRisks = riskKeywords.filter((kw) => actionContext.includes(kw));
 	if (foundRisks.length > 0) {
 		return {
 			dimension: "authority",
@@ -199,12 +222,25 @@ function assessDependencies(task: ParsedTask): ReadinessDimension {
 	const issues: string[] = [];
 
 	// Check for temporal constraints
+	// NOTE: A PAST urgency_date means overdue, not "wait." Overdue tasks need
+	// attention, not parking. Only FUTURE dates with explicit "don't do until"
+	// language should trigger WAIT.
 	if (task.urgencyDate) {
 		const urgency = new Date(task.urgencyDate);
 		const now = new Date();
-		if (urgency.getTime() < now.getTime()) {
-			issues.push(`urgency date ${task.urgencyDate} has passed`);
+		if (urgency.getTime() > now.getTime()) {
+			// Future date — check if there's an explicit "wait until" signal
+			const bodyLower = task.bodyContent.toLowerCase();
+			if (
+				bodyLower.includes("don't do until") ||
+				bodyLower.includes("do not start until") ||
+				bodyLower.includes("wait until") ||
+				bodyLower.includes("defer until")
+			) {
+				issues.push(`task deferred until ${task.urgencyDate}`);
+			}
 		}
+		// Past dates are NOT a dependency — they indicate urgency, handled elsewhere
 	}
 
 	// Check for wait/dependency indicators in body

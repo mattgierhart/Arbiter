@@ -114,6 +114,9 @@ function parseSections(body: string): TaskSections {
 	const done = extractSection(body, "## Done Criteria");
 	if (done) sections.doneCriteria = parseChecklistItems(done);
 
+	const askForMatt = extractSection(body, "## Ask for Matt");
+	if (askForMatt) sections.askForMatt = askForMatt;
+
 	const research = extractSection(body, "## Research Question");
 	if (research) sections.researchQuestion = research;
 

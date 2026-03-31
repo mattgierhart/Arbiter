@@ -167,8 +167,9 @@ function synthesizeHumanAsk(
 ): string | undefined {
 	const allIssues = [...readiness.blockedDimensions, ...readiness.partialDimensions];
 
-	// Mine the Hand-off section for what Matt should do
+	// Mine the Hand-off and Ask for Matt sections
 	const handoffAction = extractHandoffAsk(task);
+	const askForMatt = extractAskForMatt(task);
 
 	// Mine unchecked human-gated preconditions
 	const humanPreconditions = (task.sections.preconditions ?? [])
@@ -183,9 +184,17 @@ function synthesizeHumanAsk(
 
 	const authorityIssue = allIssues.find((d) => d.dimension === "authority");
 
-	// Build the ask — prioritize hand-off section (most specific), then preconditions
+	// Build the ask — prioritize: Ask for Matt > Hand-off > preconditions
+	// "Ask for Matt" is the most explicit human-authored ask
+	if (askForMatt) {
+		const afterAsk = getAgentFollowUp(task);
+		if (afterAsk) {
+			return `${askForMatt} If confirmed, I'll ${afterAsk}.`;
+		}
+		return askForMatt;
+	}
+
 	if (handoffAction && task.needsMattReview) {
-		// Hand-off section has the most context-specific ask
 		const afterAsk = getAgentFollowUp(task);
 		if (afterAsk) {
 			return `${handoffAction} If confirmed, I'll ${afterAsk}.`;
@@ -291,6 +300,41 @@ function extractHandoffAsk(task: ParsedTask): string | undefined {
 			const action = mattMatch[1].trim();
 			if (!action.endsWith("?") && action.length > 5) {
 				return `Please ${action.charAt(0).toLowerCase()}${action.slice(1)}${action.endsWith(".") ? "" : "."}`;
+			}
+		}
+	}
+
+	return undefined;
+}
+
+/**
+ * Extract explicit asks from the ## Ask for Matt section.
+ * These are human-authored asks that should take highest priority.
+ */
+function extractAskForMatt(task: ParsedTask): string | undefined {
+	if (!task.sections.askForMatt) return undefined;
+
+	const lines = task.sections.askForMatt.split("\n");
+	for (const line of lines) {
+		// Look for checklist items (unchecked asks)
+		const checkMatch = line.match(/^[-*]\s+\[([ ])\]\s+(.+)/);
+		if (checkMatch) {
+			const text = checkMatch[2].trim();
+			if (text.length > 5) {
+				// Clean up label prefixes like "Decision needed:" or "Approval needed:"
+				const cleaned = text.replace(/^(decision|approval)\s+needed:\s*/i, "").trim();
+				if (cleaned.length > 5) {
+					return cleaned.endsWith(".") ? cleaned : cleaned + ".";
+				}
+			}
+		}
+		// Also look for plain bullet items
+		const bulletMatch = line.match(/^[-*]\s+(.+)/);
+		if (bulletMatch && !line.includes("[ ]") && !line.includes("[x]")) {
+			const text = bulletMatch[1].trim();
+			const cleaned = text.replace(/^(decision|approval)\s+needed:\s*/i, "").trim();
+			if (cleaned.length > 10) {
+				return cleaned.endsWith(".") ? cleaned : cleaned + ".";
 			}
 		}
 	}

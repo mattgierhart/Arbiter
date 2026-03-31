@@ -116,6 +116,7 @@ export interface TaskSections {
 	validation?: string;
 	risks?: string;
 	handoff?: string;
+	askForMatt?: string;
 	doneCriteria?: PreconditionItem[];
 	researchQuestion?: string;
 	scope?: string;
