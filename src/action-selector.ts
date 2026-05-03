@@ -8,7 +8,7 @@ import type {
 	ReadinessDimension,
 	ReadinessResult,
 } from "./types";
-import { BLOCKER_TO_ACTION, BLOCKER_PRIORITY } from "./types";
+import { BLOCKER_TO_ACTION, BLOCKER_PRIORITY, MAX_DEC_DEPTH } from "./types";
 
 /**
  * Check if any policy rules override the default action selection.
@@ -67,18 +67,40 @@ function getTaskField(task: ParsedTask, field: string): unknown {
 	return fieldMap[field] ?? task.rawFrontmatter[field];
 }
 
+/**
+ * DEC-014: three-state confidence rollup from dimension states.
+ *   - all ready → high
+ *   - any blocked → low (will be mapped to a non-EXE blocker action anyway)
+ *   - mix of ready + partial (no blocked) → medium
+ *   - all partial, nothing ready or blocked → low (forces non-EXE)
+ *
+ * This is the Lighthouse Definition-of-Ready rollup. Confidence is load-bearing:
+ * per DEC-013, agents must be able to push back on low confidence. "high" is the
+ * only level that unconditionally permits EXE.
+ */
 function determineConfidence(readiness: ReadinessResult): ConfidenceLevel {
+	if (readiness.anyBlocked) return "low";
 	if (readiness.allReady) return "high";
-	if (readiness.anyBlocked) {
-		return readiness.blockedDimensions.length > 1 ? "low" : "medium";
-	}
-	return readiness.partialDimensions.length > 1 ? "medium" : "high";
+	const readyCount = readiness.dimensions.filter((d) => d.state === "ready").length;
+	if (readyCount === 0) return "low"; // all partial, no ready
+	return "medium"; // mix of ready + partial
 }
 
 /**
- * Determine the primary blocker using priority ordering.
- * Authority/access/risk blockers outrank missing-context so that
- * human-gated tasks get ASK/ESC instead of CTX.
+ * Determine the primary blocker using state-first, then type priority.
+ *
+ * Bug fix (2026-04-12): Previously sorted by blocker TYPE index first,
+ * then used state as a tiebreaker. This meant a partial-scope (type 7)
+ * beat a blocked-context (type 8), producing DEC when CTX was correct.
+ *
+ * New sort order:
+ *   1. All BLOCKED dimensions first (these are hard stops).
+ *   2. All PARTIAL dimensions second (these are soft signals).
+ *   3. Within each state group, sort by blocker TYPE priority
+ *      (policy > risk > access > ... > missing-context).
+ *
+ * This ensures that a blocked dimension always wins over a partial one,
+ * and type priority only arbitrates within dimensions at the same state.
  */
 function determinePrimaryBlocker(readiness: ReadinessResult): BlockerType {
 	const allIssues: ReadinessDimension[] = [
@@ -88,17 +110,15 @@ function determinePrimaryBlocker(readiness: ReadinessResult): BlockerType {
 
 	if (allIssues.length === 0) return "none";
 
-	// Sort by blocker priority (lower index = higher priority)
 	const sorted = allIssues
 		.filter((d) => d.blockerType && d.blockerType !== "none")
 		.sort((a, b) => {
+			// State-first: blocked before partial
+			if (a.state === "blocked" && b.state !== "blocked") return -1;
+			if (b.state === "blocked" && a.state !== "blocked") return 1;
+			// Within same state: type priority (lower index = higher priority)
 			const aPri = BLOCKER_PRIORITY.indexOf(a.blockerType ?? "none");
 			const bPri = BLOCKER_PRIORITY.indexOf(b.blockerType ?? "none");
-			// Prefer blocked over partial at same priority
-			if (aPri === bPri) {
-				if (a.state === "blocked" && b.state !== "blocked") return -1;
-				if (b.state === "blocked" && a.state !== "blocked") return 1;
-			}
 			return aPri - bPri;
 		});
 
@@ -498,6 +518,10 @@ export function selectAction(
 	policies: PolicyRule[] = []
 ): ActionRecord {
 	const now = new Date().toISOString();
+	// SYNC-001: pin the revision this assessment is computed against. Every
+	// ActionRecord returned below carries this so action-recorder can write
+	// `arbiter_assessed_revision` to the task note for external readers.
+	const assessedTaskRevision = task.taskRevision;
 
 	// Step 0: Check for terminal state first
 	const terminal = isTerminal(task);
@@ -511,6 +535,40 @@ export function selectAction(
 			needsHuman: false,
 			lastAssessed: now,
 			terminal: true,
+			assessedTaskRevision,
+		};
+	}
+
+	// Step 0.5: DEC-012 depth cap check — runs BEFORE policies and readiness
+	// so that a task at max depth gets the learning-loop escalation regardless
+	// of what the risk scanner or policy engine would otherwise select.
+	const currentDepth = task.arbiterDecDepth ?? 0;
+	if (currentDepth >= MAX_DEC_DEPTH) {
+		const readiness_check = readiness; // for context in the message
+		const steps = task.sections.executionSteps ?? [];
+		const unchecked = steps.filter((s) => !s.checked);
+		return {
+			action: "ESC",
+			confidence: "medium",
+			reason: `DEC-012 depth cap hit: task is at decomposition depth ${currentDepth} (cap: ${MAX_DEC_DEPTH}). Cannot decompose further without escalation.`,
+			nextAction:
+				`Escalate to Matt: max decomposition depth ${MAX_DEC_DEPTH} reached on "${task.title}" ` +
+				`(current depth ${currentDepth}). ${unchecked.length} unchecked steps remain. ` +
+				`Matt: is the depth cap still appropriate here, or should we raise it for this scenario? ` +
+				`Your feedback calibrates the decomposition model.`,
+			blockerType: "policy",
+			needsHuman: true,
+			lastAssessed: now,
+			humanAsk:
+				`Decomposition depth cap hit on "${task.title}" at depth ${currentDepth} ` +
+				`(cap is ${MAX_DEC_DEPTH} per DEC-012). ${unchecked.length} unchecked execution steps remain ` +
+				`but the task cannot be decomposed further. ` +
+				`Two questions: (1) should I raise the depth cap for this specific task? ` +
+				`(2) is the ${MAX_DEC_DEPTH}-cap the right default rule, or does this scenario suggest a different rule? ` +
+				`Your answer helps me learn.`,
+			decDepth: currentDepth,
+			decDepthCapHit: true,
+			assessedTaskRevision,
 		};
 	}
 
@@ -527,6 +585,7 @@ export function selectAction(
 			needsHuman,
 			lastAssessed: now,
 			humanAsk: needsHuman ? synthesizeHumanAsk(task, readiness) : undefined,
+			assessedTaskRevision,
 		};
 	}
 
@@ -540,6 +599,7 @@ export function selectAction(
 			blockerType: "none",
 			needsHuman: false,
 			lastAssessed: now,
+			assessedTaskRevision,
 		};
 	}
 
@@ -563,6 +623,7 @@ export function selectAction(
 		blockerType: primaryBlocker,
 		needsHuman,
 		lastAssessed: now,
+		assessedTaskRevision,
 	};
 
 	// Always include humanAsk when human is needed

@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, TFolder, normalizePath } from "obsidian";
+import { Notice, Plugin, TFile, TFolder, WorkspaceLeaf, normalizePath } from "obsidian";
 import type { ActionRecord, ArbiterSettings, PolicyRule } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
 import { parseTask } from "./task-parser";
@@ -7,6 +7,7 @@ import { selectAction } from "./action-selector";
 import { parsePolicy } from "./policy-parser";
 import { updateTaskContent, formatLogEntry, formatAssessmentBlock } from "./action-recorder";
 import { ArbiterSettingTab } from "./settings";
+import { ArbiterKanbanView, ARBITER_KANBAN_VIEW_TYPE } from "./kanban-view";
 
 export default class ArbiterPlugin extends Plugin {
 	settings: ArbiterSettings = DEFAULT_SETTINGS;
@@ -50,6 +51,22 @@ export default class ArbiterPlugin extends Plugin {
 			callback: () => this.validatePolicies(),
 		});
 
+		// Register the Kanban view (visual counterpart to the assess-* commands)
+		this.registerView(
+			ARBITER_KANBAN_VIEW_TYPE,
+			(leaf: WorkspaceLeaf) => new ArbiterKanbanView(leaf, this)
+		);
+
+		// Command: Open Kanban view
+		this.addCommand({
+			id: "open-kanban-view",
+			name: "Open Kanban view",
+			callback: () => this.activateKanbanView(),
+		});
+
+		// Add a ribbon icon for one-click access to the Kanban
+		this.addRibbonIcon("layout-grid", "Arbiter Kanban", () => this.activateKanbanView());
+
 		// Settings tab
 		this.addSettingTab(new ArbiterSettingTab(this.app, this));
 
@@ -76,10 +93,25 @@ export default class ArbiterPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const raw = await this.loadData();
+		const candidate = Object.assign({}, DEFAULT_SETTINGS, raw);
+		const { applyWithFallback } = await import("./settings-validator");
+		const result = applyWithFallback(this.settings, candidate);
+		this.settings = result.effective;
+		if (result.status === "rejected") {
+			console.error("Arbiter:", result.message);
+			// Surface to user via Notice on next interactive load — done in the settings tab
+			// rather than here to avoid spamming notices during plugin boot.
+		}
 	}
 
 	async saveSettings() {
+		const { applyWithFallback } = await import("./settings-validator");
+		const result = applyWithFallback(this.settings, this.settings);
+		if (result.status === "rejected") {
+			console.error("Arbiter: refusing to save invalid settings:", result.message);
+			return;
+		}
 		await this.saveData(this.settings);
 	}
 
@@ -310,6 +342,29 @@ applies_to: "*"
 		new Notice(
 			`Arbiter: ${policies.length} policy file(s) valid, ${totalRules} rule(s) loaded.`
 		);
+	}
+
+	/**
+	 * Open or reveal the Arbiter Kanban view in a workspace leaf.
+	 */
+	async activateKanbanView(): Promise<void> {
+		const { workspace } = this.app;
+		let leaf: WorkspaceLeaf | null = null;
+		const leaves = workspace.getLeavesOfType(ARBITER_KANBAN_VIEW_TYPE);
+
+		if (leaves.length > 0) {
+			// Already open — reveal the existing leaf
+			leaf = leaves[0];
+		} else {
+			// Open in a new main-area tab
+			leaf = workspace.getLeaf("tab");
+			await leaf.setViewState({
+				type: ARBITER_KANBAN_VIEW_TYPE,
+				active: true,
+			});
+		}
+
+		if (leaf) workspace.revealLeaf(leaf);
 	}
 
 	/**

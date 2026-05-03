@@ -65,6 +65,14 @@ export function formatFrontmatterFields(
 		fields[`${prefix}wake_condition`] = record.wakeCondition;
 	}
 
+	// SYNC-001: pin the revision this assessment was computed against so external
+	// readers can detect torn cross-file snapshots. Only emitted when the action
+	// selector populated assessedTaskRevision (which it should whenever the
+	// task being scored has a non-null taskRevision).
+	if (record.assessedTaskRevision) {
+		fields[`${prefix}assessed_revision`] = record.assessedTaskRevision;
+	}
+
 	return fields;
 }
 

@@ -1,2 +1,312 @@
 /* Arbiter — Agent Action Orchestration */
-/* Minimal styles for the settings tab */
+/* Kanban view styles + minimal settings tab styles */
+
+/* ============================================================
+   Kanban view
+   ============================================================ */
+
+.arbiter-kanban-root {
+	display: flex;
+	flex-direction: column;
+	padding: 0;
+	height: 100%;
+	overflow: hidden;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+}
+
+/* --- Header --- */
+
+.arbiter-kanban-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	flex-shrink: 0;
+}
+
+.arbiter-kanban-header-left {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.arbiter-kanban-title {
+	margin: 0;
+	font-size: var(--font-ui-large);
+	font-weight: var(--font-bold);
+	color: var(--text-normal);
+}
+
+.arbiter-kanban-subtitle {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.arbiter-kanban-header-right {
+	display: flex;
+	gap: 8px;
+}
+
+.arbiter-kanban-btn {
+	padding: 6px 12px;
+	border-radius: var(--radius-s);
+	background: var(--interactive-normal);
+	color: var(--text-normal);
+	border: 1px solid var(--background-modifier-border);
+	cursor: pointer;
+	font-size: var(--font-ui-smaller);
+}
+
+.arbiter-kanban-btn:hover {
+	background: var(--interactive-hover);
+}
+
+.arbiter-kanban-btn-primary {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-color: var(--interactive-accent);
+}
+
+.arbiter-kanban-btn-primary:hover {
+	background: var(--interactive-accent-hover);
+}
+
+/* --- Board --- */
+
+.arbiter-kanban-board {
+	display: flex;
+	flex-direction: row;
+	gap: 12px;
+	padding: 16px;
+	overflow-x: auto;
+	overflow-y: hidden;
+	flex: 1 1 auto;
+	align-items: stretch;
+}
+
+.arbiter-kanban-col {
+	display: flex;
+	flex-direction: column;
+	min-width: 240px;
+	max-width: 280px;
+	flex: 0 0 auto;
+	background: var(--background-secondary);
+	border-radius: var(--radius-m);
+	border: 1px solid var(--background-modifier-border);
+	overflow: hidden;
+}
+
+.arbiter-kanban-col-header {
+	display: flex;
+	align-items: center;
+	padding: 10px 12px;
+	background: var(--background-secondary-alt);
+	border-bottom: 1px solid var(--background-modifier-border);
+	flex-shrink: 0;
+}
+
+.arbiter-kanban-col-label {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: 1;
+}
+
+.arbiter-kanban-col-icon {
+	font-size: 16px;
+	line-height: 1;
+	width: 18px;
+	text-align: center;
+}
+
+.arbiter-kanban-col-name {
+	font-weight: var(--font-semibold);
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+}
+
+.arbiter-kanban-col-count {
+	background: var(--background-primary);
+	color: var(--text-muted);
+	padding: 1px 8px;
+	border-radius: 10px;
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	min-width: 20px;
+	text-align: center;
+}
+
+/* Column accent colors — subtle left border matching the action type */
+.arbiter-kanban-col-unassessed .arbiter-kanban-col-header { border-left: 3px solid var(--text-faint); }
+.arbiter-kanban-col-exe .arbiter-kanban-col-header         { border-left: 3px solid var(--color-green); }
+.arbiter-kanban-col-ask .arbiter-kanban-col-header         { border-left: 3px solid var(--color-yellow); }
+.arbiter-kanban-col-ctx .arbiter-kanban-col-header         { border-left: 3px solid var(--color-cyan); }
+.arbiter-kanban-col-dec .arbiter-kanban-col-header         { border-left: 3px solid var(--color-purple); }
+.arbiter-kanban-col-wait .arbiter-kanban-col-header        { border-left: 3px solid var(--color-blue); }
+.arbiter-kanban-col-esc .arbiter-kanban-col-header         { border-left: 3px solid var(--color-orange); }
+.arbiter-kanban-col-decl .arbiter-kanban-col-header        { border-left: 3px solid var(--color-red); }
+
+/* --- Cards area --- */
+
+.arbiter-kanban-cards {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 12px;
+	overflow-y: auto;
+	flex: 1 1 auto;
+}
+
+.arbiter-kanban-empty {
+	padding: 16px 8px;
+	text-align: center;
+	color: var(--text-faint);
+	font-style: italic;
+	font-size: var(--font-ui-smaller);
+}
+
+/* --- Cards --- */
+
+.arbiter-kanban-card {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 10px 12px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
+}
+
+.arbiter-kanban-card:hover {
+	background: var(--background-primary-alt);
+	border-color: var(--interactive-accent);
+}
+
+.arbiter-kanban-card:active {
+	transform: translateY(1px);
+}
+
+.arbiter-kanban-card-needs-human {
+	border-left: 3px solid var(--color-orange);
+}
+
+.arbiter-kanban-card-conf-high   { border-top: 2px solid var(--color-green); }
+.arbiter-kanban-card-conf-medium { border-top: 2px solid var(--color-yellow); }
+.arbiter-kanban-card-conf-low    { border-top: 2px solid var(--color-red); }
+
+.arbiter-kanban-card-title {
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+	line-height: 1.35;
+	overflow: hidden;
+	display: -webkit-box;
+	-webkit-line-clamp: 3;
+	-webkit-box-orient: vertical;
+}
+
+.arbiter-kanban-card-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+
+.arbiter-kanban-chip {
+	display: inline-block;
+	padding: 1px 6px;
+	border-radius: 4px;
+	font-size: 10px;
+	font-weight: var(--font-semibold);
+	text-transform: uppercase;
+	letter-spacing: 0.02em;
+	background: var(--background-modifier-border);
+	color: var(--text-muted);
+	white-space: nowrap;
+}
+
+.arbiter-kanban-chip-conf-high {
+	background: rgba(0, 200, 83, 0.18);
+	color: var(--color-green);
+}
+.arbiter-kanban-chip-conf-medium {
+	background: rgba(255, 193, 7, 0.18);
+	color: var(--color-yellow);
+}
+.arbiter-kanban-chip-conf-low {
+	background: rgba(244, 67, 54, 0.18);
+	color: var(--color-red);
+}
+
+.arbiter-kanban-chip-blocker {
+	background: rgba(255, 152, 0, 0.18);
+	color: var(--color-orange);
+}
+
+.arbiter-kanban-chip-human {
+	background: rgba(156, 39, 176, 0.18);
+	color: var(--color-purple);
+	text-transform: none;
+}
+
+.arbiter-kanban-chip-depth {
+	background: rgba(33, 150, 243, 0.18);
+	color: var(--color-blue);
+	text-transform: none;
+}
+
+.arbiter-kanban-chip-urgency {
+	background: rgba(244, 67, 54, 0.12);
+	color: var(--color-red);
+	text-transform: none;
+}
+
+.arbiter-kanban-chip-cap {
+	background: var(--background-modifier-border);
+	color: var(--text-muted);
+	text-transform: none;
+}
+
+.arbiter-kanban-card-footer {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	font-size: 10px;
+	color: var(--text-faint);
+	padding-top: 4px;
+	border-top: 1px dashed var(--background-modifier-border);
+	gap: 8px;
+}
+
+.arbiter-kanban-card-last {
+	flex-shrink: 0;
+}
+
+.arbiter-kanban-card-path {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	direction: rtl;
+	text-align: right;
+	font-family: var(--font-monospace);
+	font-size: 9px;
+	opacity: 0.7;
+}
+
+/* --- Footer --- */
+
+.arbiter-kanban-footer {
+	padding: 8px 16px;
+	border-top: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	flex-shrink: 0;
+}
+
+.arbiter-kanban-legend {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}

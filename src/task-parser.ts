@@ -1,4 +1,5 @@
 import type { ParsedTask, PreconditionItem, TaskSections } from "./types";
+import { computeTaskRevision } from "./sync-protocol";
 
 /**
  * Parse YAML frontmatter from markdown content.
@@ -169,6 +170,21 @@ export function parseTask(content: string, filePath: string): ParsedTask {
 			: undefined,
 		arbiterAssess:
 			frontmatter.arbiter_assess === true || frontmatter.arbiter_assess === "true",
+		arbiterDecDepth:
+			typeof frontmatter.arbiter_dec_depth === "number"
+				? frontmatter.arbiter_dec_depth
+				: frontmatter.arbiter_dec_depth !== undefined
+					? Number(frontmatter.arbiter_dec_depth)
+					: undefined,
+		arbiterDecParent: frontmatter.arbiter_dec_parent
+			? String(frontmatter.arbiter_dec_parent)
+			: undefined,
+
+		// SYNC-001: revision tracking
+		taskRevision: computeTaskRevision(body, frontmatter),
+		arbiterAssessedRevision: frontmatter.arbiter_assessed_revision
+			? String(frontmatter.arbiter_assessed_revision)
+			: undefined,
 
 		filePath,
 		rawFrontmatter: frontmatter,
