@@ -1,1 +1,1 @@
-# Arbiter---an-AI-Kanban-board-for-Obsidian
+# Arbiter, an-AI-Kanban-board-for-Obsidian
