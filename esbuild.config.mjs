@@ -22,6 +22,7 @@ const context = await esbuild.context({
 		"@lezer/highlight",
 		"@lezer/lr",
 		...builtins,
+		...builtins.map((mod) => `node:${mod}`),
 	],
 	format: "cjs",
 	target: "es2022",
