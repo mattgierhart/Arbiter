@@ -2,13 +2,23 @@ import type {
 	ActionRecord,
 	ActionType,
 	BlockerType,
+	ConfidenceConfig,
 	ConfidenceLevel,
 	ParsedTask,
 	PolicyRule,
 	ReadinessDimension,
 	ReadinessResult,
 } from "./types";
-import { BLOCKER_TO_ACTION, BLOCKER_PRIORITY, MAX_DEC_DEPTH } from "./types";
+import {
+	BLOCKER_TO_ACTION,
+	BLOCKER_PRIORITY,
+	CONFIDENCE_SCORE,
+	HARD_BLOCK_DIMENSIONS,
+	MAX_DEC_DEPTH,
+} from "./types";
+
+/** Default EXE confidence threshold when no config is provided. Matches legacy `confidenceThreshold` default. */
+const DEFAULT_EXE_THRESHOLD = 0.7;
 
 /**
  * Check if any policy rules override the default action selection.
@@ -68,22 +78,83 @@ function getTaskField(task: ParsedTask, field: string): unknown {
 }
 
 /**
- * DEC-014: three-state confidence rollup from dimension states.
- *   - all ready → high
- *   - any blocked → low (will be mapped to a non-EXE blocker action anyway)
- *   - mix of ready + partial (no blocked) → medium
- *   - all partial, nothing ready or blocked → low (forces non-EXE)
+ * DEC-014 + OQ-005: three-state confidence rollup from dimension states.
  *
- * This is the Lighthouse Definition-of-Ready rollup. Confidence is load-bearing:
- * per DEC-013, agents must be able to push back on low confidence. "high" is the
- * only level that unconditionally permits EXE.
+ *   - any dim blocked → low (forces non-EXE)
+ *   - any HARD-BLOCK dim non-ready (blocked OR partial) → low
+ *     (Authority/Feasibility partial means risk or capability concern that
+ *      should not be papered over with confidence)
+ *   - all dims ready → high
+ *   - hard-blocks ready, soft-blocks partial → medium
+ *   - all dims partial, nothing ready → low
+ *
+ * This is the Lighthouse Definition-of-Ready rollup with the OQ-005 hard-block
+ * refinement. Per DEC-013, agents must be able to push back on low confidence.
+ * The EXE confidence gate (`passesConfidenceGate`) interprets the level via
+ * CONFIDENCE_SCORE and the per-agent threshold.
  */
 function determineConfidence(readiness: ReadinessResult): ConfidenceLevel {
 	if (readiness.anyBlocked) return "low";
+	// OQ-005: any hard-block dim that isn't fully ready drops confidence to low,
+	// even if no dim is "blocked" outright. Authority/Feasibility partial means
+	// the EXE bar can't be reached structurally regardless of soft-block scores.
+	for (const hardDim of HARD_BLOCK_DIMENSIONS) {
+		const dim = readiness.dimensions.find((d) => d.dimension === hardDim);
+		if (dim && dim.state !== "ready") return "low";
+	}
 	if (readiness.allReady) return "high";
 	const readyCount = readiness.dimensions.filter((d) => d.state === "ready").length;
 	if (readyCount === 0) return "low"; // all partial, no ready
-	return "medium"; // mix of ready + partial
+	return "medium"; // hard-blocks ready, mix of soft ready + partial
+}
+
+/**
+ * OQ-005: structural executability check.
+ *
+ * Returns true iff hard-block dimensions are fully READY AND no dim is BLOCKED.
+ * Soft-block dimensions may be partial without disqualifying EXE. The
+ * confidence gate (OQ-007) decides whether the resulting confidence level
+ * clears the per-agent threshold.
+ *
+ * This replaces the older "all 6 dims must be ready" rule, which made EXE
+ * unreachable in practice for most real-world tasks (a single unchecked
+ * precondition or extra execution step would block).
+ */
+function isStructurallyExecutable(readiness: ReadinessResult): boolean {
+	if (readiness.anyBlocked) return false;
+	for (const hardDim of HARD_BLOCK_DIMENSIONS) {
+		const dim = readiness.dimensions.find((d) => d.dimension === hardDim);
+		if (!dim || dim.state !== "ready") return false;
+	}
+	return true;
+}
+
+/**
+ * OQ-007: resolve the effective EXE threshold for this task.
+ * Per-agent override wins, then config default, then DEFAULT_EXE_THRESHOLD.
+ */
+function getEffectiveExeThreshold(task: ParsedTask, config?: ConfidenceConfig): number {
+	if (!config) return DEFAULT_EXE_THRESHOLD;
+	const perAgent = config.perAgentThreshold?.[task.owner];
+	if (typeof perAgent === "number" && Number.isFinite(perAgent)) return perAgent;
+	if (typeof config.defaultThreshold === "number" && Number.isFinite(config.defaultThreshold)) {
+		return config.defaultThreshold;
+	}
+	return DEFAULT_EXE_THRESHOLD;
+}
+
+/**
+ * OQ-007: confidence gate. EXE is admitted only when the score for this
+ * confidence level meets the effective threshold for this task's owner.
+ */
+function passesConfidenceGate(
+	confidence: ConfidenceLevel,
+	task: ParsedTask,
+	config?: ConfidenceConfig,
+): boolean {
+	const score = CONFIDENCE_SCORE[confidence];
+	const threshold = getEffectiveExeThreshold(task, config);
+	return score >= threshold;
 }
 
 /**
@@ -511,11 +582,16 @@ function generateNextAction(
 
 /**
  * Select the best action for a task given its readiness assessment and policies.
+ *
+ * OQ-005 / OQ-007: pass `confidenceConfig` to apply the hard-block executability
+ * model and per-agent EXE thresholds. When omitted, falls back to the legacy
+ * default threshold (0.7) — high confidence required.
  */
 export function selectAction(
 	task: ParsedTask,
 	readiness: ReadinessResult,
-	policies: PolicyRule[] = []
+	policies: PolicyRule[] = [],
+	confidenceConfig?: ConfidenceConfig,
 ): ActionRecord {
 	const now = new Date().toISOString();
 	// SYNC-001: pin the revision this assessment is computed against. Every
@@ -589,12 +665,21 @@ export function selectAction(
 		};
 	}
 
-	// Step 2: If all ready, execute
-	if (readiness.allReady) {
+	// Step 2: OQ-005 + OQ-007 — EXE gated by structural executability AND confidence threshold.
+	// Hard-block dims (Authority, Feasibility) must be ready and no dim must be blocked.
+	// The resulting confidence must meet the per-agent threshold (or default 0.7).
+	const confidence = determineConfidence(readiness);
+
+	if (isStructurallyExecutable(readiness) && passesConfidenceGate(confidence, task, confidenceConfig)) {
+		const partial = readiness.partialDimensions;
+		const reason =
+			partial.length === 0
+				? "All readiness dimensions are satisfied."
+				: `Hard-block dimensions ready; ${partial.length} soft-dim(s) partial — proceeding with ${confidence} confidence (threshold: ${getEffectiveExeThreshold(task, confidenceConfig)}).`;
 		return {
 			action: "EXE",
-			confidence: "high",
-			reason: "All readiness dimensions are satisfied.",
+			confidence,
+			reason,
 			nextAction: generateNextAction("EXE", task, readiness),
 			blockerType: "none",
 			needsHuman: false,
@@ -603,10 +688,31 @@ export function selectAction(
 		};
 	}
 
-	// Step 3: Map highest-priority blocker to action
+	// Step 3: EXE not admitted — map highest-priority blocker to action.
+	// `confidence` from above is reused; primaryBlocker covers both blocked and partial dims.
 	const primaryBlocker = determinePrimaryBlocker(readiness);
+
+	// Edge case: structurally executable but confidence below threshold AND no
+	// dimension flagged a blocker (i.e., readiness is all-ready but the threshold
+	// is unreachably high). primaryBlocker is "none" which would otherwise map
+	// back to EXE — that contradicts the gate. Force ASK with a confidence-
+	// threshold reason so the operator sees what's actually blocking dispatch.
+	if (primaryBlocker === "none" && isStructurallyExecutable(readiness)) {
+		const threshold = getEffectiveExeThreshold(task, confidenceConfig);
+		return {
+			action: "ASK",
+			confidence,
+			reason: `Confidence ${confidence} (score ${CONFIDENCE_SCORE[confidence]}) below EXE threshold ${threshold} for owner '${task.owner}'.`,
+			nextAction: `Confidence threshold not met for '${task.owner}'. Either raise confidence by addressing partial dimensions, lower the threshold for this agent, or approve manually.`,
+			blockerType: "policy",
+			needsHuman: true,
+			lastAssessed: now,
+			humanAsk: `Confidence (${confidence}) below threshold (${threshold}) for owner '${task.owner}'. Approve manually or adjust the threshold in Arbiter settings.`,
+			assessedTaskRevision,
+		};
+	}
+
 	const action = BLOCKER_TO_ACTION[primaryBlocker];
-	const confidence = determineConfidence(readiness);
 	const needsHuman = detectHumanNeeded(task, readiness, action);
 
 	const allIssues = [

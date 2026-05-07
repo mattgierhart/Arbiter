@@ -74,6 +74,55 @@ export interface ActionRecord {
 export const MAX_DEC_DEPTH = 3;
 
 /**
+ * OQ-005: Hard-block readiness dimensions.
+ *
+ * Authority and Feasibility are the two dimensions where a non-ready state must
+ * unconditionally block EXE — no amount of compensating ready elsewhere makes
+ * up for "agent doesn't have permission" or "task is impossible." The other
+ * four dimensions (Clarity, Context, Scope, Dependencies) are soft-block: a
+ * partial state contributes to lower confidence but does not by itself prevent
+ * EXE. This is what makes the EXE bar reachable in real-world tasks where a
+ * couple of preconditions are unchecked but the agent has both authority and
+ * capability to proceed.
+ *
+ * If either hard-block dim is blocked OR partial, the structural-executability
+ * check fails and the action selector falls through to primary-blocker logic.
+ *
+ * See PRD.md §10 (v1.0 criterion 5) and open-questions.md OQ-005.
+ */
+export const HARD_BLOCK_DIMENSIONS: ReadinessDimension["dimension"][] = [
+	"authority",
+	"feasibility",
+];
+
+/**
+ * OQ-007: numeric scores for confidence levels, used to compare against the
+ * EXE threshold. Ordering matters more than the absolute values; gates are
+ * satisfied when score >= threshold.
+ */
+export const CONFIDENCE_SCORE: Record<ConfidenceLevel, number> = {
+	high: 1.0,
+	medium: 0.6,
+	low: 0.0,
+};
+
+/**
+ * OQ-007: per-call configuration for the action selector's confidence gate.
+ *
+ * `defaultThreshold` is the EXE bar applied when no per-agent override matches.
+ * 0.7 (the legacy default) means "high confidence required, medium not enough."
+ * Lower values (e.g., 0.5) admit medium-confidence EXE.
+ *
+ * `perAgentThreshold` lets you tighten or loosen the bar by `task.owner`. The
+ * intended use is: per-agent dispatch trust (e.g., Codex read-only → very high
+ * threshold; Pinch local action → medium acceptable; Claude Code → high).
+ */
+export interface ConfidenceConfig {
+	defaultThreshold: number;
+	perAgentThreshold?: Record<string, number>;
+}
+
+/**
  * Blocker priority order: higher-priority blockers override lower ones.
  * Authority/access/risk issues should outrank missing-context because
  * human-gated tasks need ASK/ESC, not CTX.
@@ -196,6 +245,23 @@ export interface ArbiterSettings {
 	syncProtocolEnabled: boolean;
 	/** SYNC-001: how long Kanban.md must be untouched before reads are trusted, ms. */
 	boardDebounceMs: number;
+
+	/**
+	 * OQ-007: per-agent EXE confidence threshold overrides, keyed by `task.owner`.
+	 * When set for an owner, that value is used in place of `confidenceThreshold`
+	 * for tasks owned by that agent. Useful for tightening the bar on
+	 * higher-stakes dispatches (e.g., Claude Code) while keeping it lower for
+	 * trusted local runs (e.g., Pinch). Optional — when unset for an owner,
+	 * `confidenceThreshold` applies.
+	 *
+	 * Example:
+	 *   {
+	 *     "claude": 0.95,   // only EXE on rock-solid high confidence
+	 *     "pinch": 0.6,     // medium acceptable
+	 *     "codex": 1.01,    // unreachable — codex never EXEs (read-only by policy)
+	 *   }
+	 */
+	perAgentExeThreshold?: Record<string, number>;
 
 	/**
 	 * DISPATCH-HINTS-001 (optional): advisory limits Arbiter publishes for external

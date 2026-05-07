@@ -1,5 +1,5 @@
 import { Notice, Plugin, TFile, TFolder, WorkspaceLeaf, normalizePath } from "obsidian";
-import type { ActionRecord, ArbiterSettings, PolicyRule } from "./types";
+import type { ActionRecord, ArbiterSettings, ConfidenceConfig, PolicyRule } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
 import { parseTask } from "./task-parser";
 import { assessReadiness } from "./readiness";
@@ -155,8 +155,14 @@ export default class ArbiterPlugin extends Plugin {
 			// Run readiness assessment
 			const readiness = assessReadiness(task);
 
+			// OQ-005 + OQ-007: build confidence config from current settings
+			const confidenceConfig: ConfidenceConfig = {
+				defaultThreshold: this.settings.confidenceThreshold,
+				perAgentThreshold: this.settings.perAgentExeThreshold,
+			};
+
 			// Select action
-			const record = selectAction(task, readiness, policies);
+			const record = selectAction(task, readiness, policies, confidenceConfig);
 
 			// Update the task note
 			const updatedContent = updateTaskContent(content, record, {

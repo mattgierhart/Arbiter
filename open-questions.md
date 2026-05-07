@@ -33,7 +33,7 @@
 
 ### OQ-004: Policy granularity
 
-**Status**: OPEN — targeted by recommendation #3 (PRD §11)
+**Status**: 🟡 DEFERRED to v0.5.0 — design ambiguity needs Matt's call
 **Question**: What is the right level for policies?
 - Per-vault (global defaults)
 - Per-project/folder
@@ -41,18 +41,24 @@
 - Per-task-type
 - Some combination
 
-**Why it matters now**: Multi-agent reality (Claude Code + Pinch + Codex sharing the vault) makes per-agent policy load-bearing. Codex is read-only by design — Arbiter must be able to express "Codex never EXE writes" as a policy rule, not just a convention.
+**Why deferred**: The "per-agent" lookup model has two reasonable interpretations:
+1. **Owner-based**: `applies_to_agent` matches `task.owner` (the agent that authored / will dispatch the task). Simple, but tasks like `owner: matt+claude` don't disambiguate the actual dispatcher.
+2. **Invoking-agent-based**: `applies_to_agent` matches whoever invoked Arbiter at assess time. More accurate, but requires plumbing an "invoking agent" identifier through the assess command (currently absent from the API).
 
-**Tentative direction**: Add `applies_to_agent: claude-code | pinch | codex | "*"` to the policy file format. Agent name comes from the assess invocation context (frontmatter field `arbiter_invoking_agent` or settings default).
+Picking one without Matt's input risks landing the wrong model and reworking later. v0.4.0 ships without this. v0.5.0 picks a model and implements it.
+
+**What's already supported**: `PolicyRule.scope` already accepts `"agent"` and matches against `task.owner`. So owner-based per-agent policies work today via existing scope mechanism. The OQ-004 fix is about adding a SECOND axis (cross-cutting agent + scope), not enabling agent-aware policies at all.
 
 ---
 
 ### OQ-005: Readiness dimension weighting
 
-**Status**: OPEN — targeted by recommendation #3
-**Question**: Are all 6 readiness dimensions equally important, or should some be weighted? Is "Authority" always a hard block while "Clarity" can be partial?
+**Status**: ✅ RESOLVED (2026-05-06, planned for v0.4.0)
+**Resolution**: Authority and Feasibility implemented as hard-block dimensions via `HARD_BLOCK_DIMENSIONS` in `types.ts`. New helper `isStructurallyExecutable()` in `action-selector.ts` requires both hard-blocks to be `ready` AND no dim to be `blocked`. Soft-block dims (Clarity, Context, Scope, Dependencies) may be `partial` without disqualifying EXE — but that lowers confidence to medium, which then must clear the per-agent threshold (see OQ-007).
 
-**Tentative direction (per PRD §11.3)**: Authority and Feasibility are **hard blocks** — if either is `blocked`, EXE is impossible regardless of other dimensions. The remaining four (Clarity, Context, Scope, Dependencies) contribute to a weighted readiness score that feeds the EXE confidence calculation. Each dimension's hard-block flag is a property of the dimension definition, not a policy override.
+`determineConfidence()` updated: any hard-block partial → low confidence (forces non-EXE regardless of other dims).
+
+Tests: 6 new cases in `__tests__/action-selector.test.ts` under "OQ-005 + OQ-007: hard-block dimensions and EXE confidence gate".
 
 ---
 
@@ -65,10 +71,16 @@
 
 ### OQ-007: Confidence threshold for EXE
 
-**Status**: 🟡 PARTIALLY RESOLVED — targeted by recommendation #3
-**Resolved**: Plugin-level Definition-of-Ready confidence threshold exists as `confidenceThresholdEXE` setting (v0.2.0). Below threshold, action-selector forces a non-EXE action.
+**Status**: ✅ RESOLVED (2026-05-06, planned for v0.4.0)
+**Resolution**: The legacy `confidenceThreshold` setting (was effectively unused at runtime) is now the active EXE gate via `passesConfidenceGate()` in `action-selector.ts`. Confidence levels map to numeric scores: `high=1.0, medium=0.6, low=0.0` (`CONFIDENCE_SCORE` in `types.ts`).
 
-**Still open**: Per-agent threshold tuning. Claude Code dispatch is higher-stakes than Pinch local action — should require higher confidence floor. Tentative direction: `perAgentDefaults` block in settings, with policy-level overrides that can raise but not lower the floor.
+Per-agent overrides ship as new optional setting `perAgentExeThreshold: Record<string, number>`. The selector resolves the effective threshold: `perAgentThreshold[task.owner] ?? defaultThreshold ?? 0.7`.
+
+**Edge case handled**: when readiness is structurally executable but confidence is below threshold AND no dim has a blocker (i.e., all-ready but threshold artificially high — `codex: 1.01` use case), selector returns ASK with reason "Confidence below threshold for owner X" rather than falling back to EXE via `BLOCKER_TO_ACTION["none"]`.
+
+**Default behavior preserved**: with the default threshold of 0.7, only high-confidence (1.0) tasks EXE — same as the old `allReady`-only rule. Loosening the bar requires explicit threshold lowering (e.g., `defaultThreshold: 0.5` admits medium-confidence EXE for soft-partial-only tasks).
+
+Tests: see `__tests__/action-selector.test.ts` "per-agent threshold overrides" and "blocks EXE even at high confidence when threshold is set above 1.0".
 
 ---
 
@@ -83,8 +95,15 @@
 
 ### OQ-009: Action record immutability
 
-**Status**: OPEN — targeted by recommendation #3
-**Tentative direction**: **Inline assessment is the latest truth — overwrites on re-assess** (current behavior, keep it). **Machine log is append-only history** when `enableMachineLog` is on (already implemented). Audit story lives in the machine log; the inline block is the human-facing snapshot. Document this clearly in a new `AUDIT.md` at repo root so retro tooling and reviewers know which file to trust for "what did we decide at time T".
+**Status**: ✅ RESOLVED (2026-05-06, planned for v0.4.0)
+**Resolution**: [`AUDIT.md`](AUDIT.md) at repo root documents the dual-artefact model.
+
+- **Inline `## Agent Assessment` section** = current truth, overwritten on every reassess.
+- **Machine log at `.agent-orchestrator/logs/assessment-log.md`** = append-only history (when `enableMachineLog: true`).
+
+These serve different questions: inline answers "what should the agent do RIGHT NOW?" — the latest, period. Machine log answers "why did the agent do X yesterday at 14:32?" — time-stamped historical. SYNC-001's `arbiter_assessed_revision` is logged in both, so a forensic reader can verify what content Arbiter scored against.
+
+`AUDIT.md` includes reconstruction recipes (e.g., "show me what Arbiter has ever said about TASK-042"), edge cases, and a settings reference. No code changes — current `action-recorder.ts` already implements the model correctly.
 
 ---
 

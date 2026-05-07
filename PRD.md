@@ -253,14 +253,14 @@ These four are the targets of recommendation #3.
 
 Arbiter ships v1.0 when **all** of the following hold:
 
-1. ✅ Code: 7 action types, 6 readiness dimensions, kanban view, sync protocol, settings validator — **already shipped in v0.2.0**.
-2. ⏳ **End-to-end autonomous loop has run successfully on ≥5 real tasks** without Matt intervention beyond responding to ASKs.
-3. ⏳ **BRAT release flow is set up** — `git tag → gh release create` produces an asset bundle BRAT can install. Matt's vault auto-updates within 24h of a release.
-4. ⏳ **Per-agent policies work** (OQ-004 resolved): Codex is read-only, Pinch can EXE within scope, Claude Code can EXE within scope but with higher confidence threshold.
-5. ⏳ **Authority + Feasibility are hard-block dimensions** (OQ-005 resolved): no EXE if either is blocked, regardless of other dimension scores.
-6. ⏳ **Per-agent EXE confidence floors documented** (OQ-007): defaults set, override per-policy.
-7. ⏳ **Audit story is clear** (OQ-009): inline = current truth, machine log = append-only history, retro can reconstruct any decision.
-8. ⏳ **Routine + retro cadence is in place**: morning Routine fires, evening (or weekly) `/portfolio-retro` runs, gaps feed back into `phase-actions.json`.
+1. ✅ Code: 7 action types, 6 readiness dimensions, kanban view, sync protocol, settings validator — already shipped in v0.2.0.
+2. ⏳ End-to-end autonomous loop has run successfully on ≥5 real tasks without Matt intervention beyond responding to ASKs.
+3. ✅ BRAT release flow is set up — released as **v0.3.0** (2026-05-06) with workflow + release script. Matt's vault auto-updates after BRAT install.
+4. 🟡 Per-agent policies work (OQ-004 deferred to v0.5.0 — design ambiguity around invoking-agent vs. owner identity needs resolving).
+5. ✅ Authority + Feasibility are hard-block dimensions (OQ-005, v0.4.0): `isStructurallyExecutable` requires both ready; partial drops confidence to low.
+6. ✅ Per-agent EXE confidence floors (OQ-007, v0.4.0): `confidenceThreshold` plus `perAgentExeThreshold` map; selector enforces via `passesConfidenceGate`.
+7. ✅ Audit story is clear (OQ-009): see [`AUDIT.md`](AUDIT.md) — inline = current truth, machine log = append-only history.
+8. ⏳ Routine + retro cadence is in place: morning Routine fires, evening (or weekly) `/portfolio-retro` runs, gaps feed back into `phase-actions.json`.
 
 Items #2–#7 map to the three recommendations and four open questions in this PRD.
 
