@@ -1,7 +1,7 @@
 {
 	"id": "obsidian-arbiter",
 	"name": "Arbiter — Agent Action Orchestration",
-	"version": "0.3.0",
+	"version": "0.4.0",
 	"minAppVersion": "1.0.0",
 	"description": "A structured decision protocol for AI agents. Assesses task readiness across 6 dimensions, selects from 7 action types (EXE/ASK/CTX/DEC/WAIT/ESC/DECL), writes visible assessments into your notes, and surfaces the board in a Kanban view. Enforces Definition-of-Ready confidence thresholds and a max decomposition depth with learning feedback. No API keys needed — runs locally, all state is plain markdown.",
 	"author": "Matt Gierhart",
