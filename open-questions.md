@@ -84,6 +84,71 @@ Tests: see `__tests__/action-selector.test.ts` "per-agent threshold overrides" a
 
 ---
 
+### OQ-013: How aggressive should "Assess all" filtering be? (raised 2026-05-08)
+
+**Status**: OPEN — target v0.5.0
+**Problem**: `walkFolder` in `kanban-view.ts` recurses into ALL subdirectories of `taskDiscoveryFolders`. Matt's vault has `backlog/tasks/arbiter-test-suite/` (12 fixtures + README.md) which gets assessed alongside real tasks, producing noise.
+
+**Options**:
+1. **Skip well-known non-task filenames** — `README.md`, `index.md` (case-insensitive). Cheap, opaque (Matt has to know).
+2. **Require minimum frontmatter for inclusion** — must have title + type + status. Cleanest signal-based filter; auto-skips README and stub files.
+3. **Per-folder opt-out** — `taskDiscoveryFoldersExclude: ["**/test-suite/**", "**/_archive/**"]` in settings. Most flexible, more setting surface area.
+4. **Frontmatter opt-in** — only assess files with `arbiter_assess: true` (already a field that exists for the auto-assess-on-change feature). Most explicit, but requires Pinch/Matt to set the field on every real task.
+
+**Recommendation**: Option 2 (minimum frontmatter) as the default behavior in `walkFolder`, with Option 3 as an escape hatch for power users. Don't ship Option 4 — too invasive for existing task notes that Pinch already populates.
+
+---
+
+### OQ-014: Three-state visual model — which actions go where? (raised 2026-05-08)
+
+**Status**: OPEN — target v0.5.0
+**Problem**: Matt's mental model is 🔴 Red / 🟡 Yellow / 🟢 Green. Arbiter has 7 actions. Mapping isn't obvious for all of them.
+
+**Tentative mapping**:
+
+| Action | What it means | Color in v0.5.0 |
+|---|---|---|
+| EXE | Ready to execute | 🟢 Green |
+| CTX | Agent can self-serve missing context | 🟢 Green (debatable — agent acts, but acts in a different mode) |
+| ASK | Needs human clarification | 🟡 Yellow |
+| ESC | Needs human approval (authority/risk) | 🟡 Yellow |
+| DEC | Too broad — needs decomposition before action | 🔴 Red |
+| WAIT | Blocked by dependency or time | 🔴 Red |
+| DECL | Out of scope, infeasible, or terminal (done/cancelled) | 🔴 Red |
+
+**Open question**: Is CTX really Green? Arbiter says "agent can act on this — go gather context first, then re-assess." That's actionable but not directly executable. Two views:
+- View A (CTX = Green): Anything the agent can do alone is Green. Context-gathering is action.
+- View B (CTX = Yellow): Green should mean "execute the actual task." CTX requires another assessment cycle first.
+
+**Recommendation**: View A for v0.5.0 (CTX = Green) — it matches Matt's "ready to do something" intuition. If practice shows CTX leads to false-greens, move to Yellow in v0.6.0.
+
+The internal 7-action model stays unchanged. Only the kanban view's visual chips and the `arbiter-read` skill's display layer get the 3-color collapse.
+
+---
+
+### OQ-015: Approval flag — how is it set, where does it live? (raised 2026-05-08)
+
+**Status**: OPEN — target v0.5.0
+**Problem**: Matt wants a positive "I've approved this for execution" signal, distinct from priority and from `needs_matt_review`. Currently:
+- `needs_matt_review: true` = "don't dispatch, Matt hasn't reviewed" (negative gate)
+- No positive "approved" signal exists.
+
+The dispatch loop needs to know: "is this card cleared by Matt to actually run, or is it just ready in principle?"
+
+**Recommendation**: New frontmatter field `matt_approved: true` (boolean). Plugin command "Arbiter: Toggle approved" cycles. Up Next strip in kanban view requires green AND approved before showing a card.
+
+**Important interaction**: `needs_matt_review` and `matt_approved` are not redundant.
+- `needs_matt_review: true` + `matt_approved: false` = task is gated, awaiting Matt — never dispatch
+- `needs_matt_review: true` + `matt_approved: true` = task was gated, Matt approved — dispatch
+- `needs_matt_review: false` + `matt_approved: false` = ready in principle but Matt hasn't opted in — don't dispatch yet
+- `needs_matt_review: false` + `matt_approved: true` = full green light — dispatch
+
+This gives Matt the "explicit opt-in to autonomy" model: the autonomous loop never silently dispatches a task Matt hasn't seen. Even green tasks need approval to run unattended.
+
+**Alternative considered (rejected)**: Re-use `needs_matt_review` as a tri-state ("unreviewed" / "approved" / "rejected"). Rejected because the field is currently boolean and used by Pinch for the existing workflow; changing semantics would break Pinch's integration.
+
+---
+
 ### OQ-012: Priority flag + user-action mechanism (NEW, raised 2026-05-08)
 
 **Status**: OPEN — target v0.5.0

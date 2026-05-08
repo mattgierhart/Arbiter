@@ -311,7 +311,70 @@ Concrete edits anticipated (subject to confirmation when we get there):
 
 ---
 
-## 12. Session state — loop diagnosis (2026-05-06)
+## 12. v0.5.0 Roadmap — "Clarity" (planning, raised 2026-05-08)
+
+After the v0.4.0 install in Matt's vault, three usability concerns surfaced. This section captures the plan to address them. Open design questions are tracked as OQ-013/014/015 in `open-questions.md`.
+
+### 12.1 Three concerns + diagnosis
+
+| # | Matt's observation | Diagnosis |
+|---|---|---|
+| **1** | "Assess all" produces a list of errors — unclear if real | Two compounding issues: (a) `walkFolder` recurses into `backlog/tasks/arbiter-test-suite/` (12 fixture files + 1 README.md), assessing each one and firing one Notice per file. (b) Every successful assessment ALSO fires a Notice. Net: 31 task notes + 13 test-suite files = ~44 rapid-fire Notices, plus parse warnings on the README. The "errors" are mostly noise. |
+| **2** | Can't tell which tasks are about to be executed | The kanban view groups by `arbiter_action` (EXE/ASK/CTX/etc.) but the EXE column doesn't differentiate "ready and approved and priority" from "ready, just one of many." The dispatch queue isn't visually surfaced. |
+| **3** | Readiness model is too complex (7 columns) — Matt suggests 3 colors (Red/Yellow/Green) + project column + approval indicator | The 7-action model is correct internally but over-detailed for human scanning. Three buckets is enough for the human eye. |
+
+### 12.2 Side observation worth noting
+
+Sample assessments dated 2026-05-08T11:20 show `arbiter_action: "EXE"` on tasks with `status: done`. The `done`/`resolved` terminal-state fix shipped in v0.4.0 (commit `fe97c31`) **after** those assessments ran. To pick up the fix, **reload Obsidian** (Cmd+R or quit/reopen). Subsequent assessments will correctly DECL on `status: done` tasks.
+
+### 12.3 v0.5.0 scope — recommended
+
+Theme: **make the current model usable + trustworthy without changing the action model**.
+
+| Component | Effort | Why now |
+|---|---|---|
+| **A. Quiet "Assess all"** | Small | Single biggest UX pain reported. Fix: silent mode in batch (no per-file Notice), single summary at end, exclude `README.md` and other non-task files via opt-in via `taskDiscoveryFolders` exclusions or skip files lacking minimum frontmatter (title + type + status). |
+| **B. "Up Next" strip in Kanban view** | Medium | Top-of-view section showing the actual dispatch queue: cards that are ready AND approved AND not blocked, sorted by priority. Click to open. Makes "what runs next" obvious. |
+| **C. 3-state visual readiness** | Medium | Map 7 actions to 3 colors on each card: 🟢 Green = agent-actionable (EXE, CTX); 🟡 Yellow = needs human (ASK, ESC); 🔴 Red = not actionable now (DEC, WAIT, DECL). Internal action model unchanged — only the kanban view's color system simplifies. Card detail still shows the precise action. |
+| **D. Approval flag** | Small | New frontmatter field `matt_approved: true` (boolean). Plugin command "Arbiter: Toggle approved" cycles current note's flag. "Up Next" requires green AND approved; without approval, ready tasks don't auto-dispatch. |
+| **E. Priority flag** | Small | OQ-012's recommendation: `priority: urgent\|high\|normal\|low`. Plugin command "Arbiter: Cycle priority". Sorts "Up Next" strip. |
+
+**Out of scope for v0.5.0** (deferred to v0.6.0):
+- **Project facet/grouping** in kanban view (Matt's "column list that reflects the related project") — simple to add as a filter chip strip, but not blocking. Can ship in v0.6.0 once 3-state + Up Next prove out.
+- **OQ-004 per-agent policies** (still deferred from v0.4.0) — design ambiguity unresolved.
+- **Status bar quick-toggle** for priority/approval — keystroke-via-command-palette is enough for v0.5.0; UI button can come later if friction proves real.
+
+### 12.4 v0.5.0 dispatch-queue logic (the integration)
+
+A card is **dispatchable** (and shows in Up Next) when ALL of the following hold:
+
+1. `arbiter_action` ∈ {EXE} (post-3-state mapping = Green) — strict for v0.5.0; CTX may join in v0.6.0 if "agent self-serves context" is accepted as auto-dispatchable
+2. `matt_approved: true` (no implicit dispatch — Matt opts in per card)
+3. `arbiter_assessed_revision` matches current `task_revision` (SYNC-001 freshness)
+4. No `blocked_by` chain failure (per `/arbiter-read` Phase 3)
+5. `needs_matt_review: false` OR has Matt's ack (per `/arbiter-read` Phase 4)
+
+Sort order: priority (urgent → high → normal → low) → urgency_date overdue → urgency_date soon → last_assessed (oldest first, so unattended tasks bubble up).
+
+### 12.5 v0.5.0 release plan
+
+- Single milestone, one git tag `0.5.0`, single GitHub Release via existing workflow
+- Code changes scoped to: `kanban-view.ts` (B, C, A), `main.ts` (D, E commands), `task-parser.ts` (D, E fields), `types.ts` (D, E type definitions), 1 README skip in `walkFolder`
+- Tests: 4-6 new test cases covering Up Next sort, color mapping, terminal status enforcement (already in v0.4.0), approval flag toggle
+- No SoT-breaking changes — frontmatter additions are backward-compatible (default values when fields absent)
+
+### 12.6 v0.6.0 sketch (lightly held — revisit after v0.5.0 ships)
+
+- **Project facet** in kanban view (filter chips by `project_tag` or path-derived project name)
+- **OQ-004 per-agent policies** with the model decided
+- **CTX as auto-dispatchable** (or not) — informed by v0.5.0 dispatch log review
+- **Status bar quick-toggle** for priority/approval if Cmd+P friction is real
+
+Past v0.6.0 is too speculative to scope.
+
+---
+
+## 13. Session state — loop diagnosis (2026-05-06)
 
 End-to-end dispatch loop verified at the infrastructure level. **Result: loop has never closed.** Detailed gaps:
 
@@ -340,7 +403,7 @@ The original recommendation order (#1 loop test → #2 BRAT → #3 P2 questions)
 
 ---
 
-## 13. References
+## 14. References
 
 | File | Role |
 |---|---|
