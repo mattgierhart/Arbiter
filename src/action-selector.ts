@@ -197,14 +197,23 @@ function determinePrimaryBlocker(readiness: ReadinessResult): BlockerType {
 }
 
 /**
- * Check if a task is in a terminal state (completed/cancelled).
+ * Statuses that indicate a task is finished and Arbiter should not advance it.
+ * Pinch's vault uses `done` and `resolved` in real cards; Arbiter's earlier
+ * vocabulary was `completed` / `cancelled`. Recognize all four. Comparison is
+ * case-insensitive so frontmatter casing variations don't cause false EXEs on
+ * already-finished work.
+ */
+const TERMINAL_STATUSES = new Set(["completed", "cancelled", "done", "resolved"]);
+
+/**
+ * Check if a task is in a terminal state.
+ * Returns the reason if terminal, null otherwise.
  */
 function isTerminal(task: ParsedTask): { terminal: true; reason: string } | null {
-	if (task.status === "completed") {
-		return { terminal: true, reason: "Task is already completed." };
-	}
-	if (task.status === "cancelled") {
-		return { terminal: true, reason: "Task is cancelled." };
+	const normalized = String(task.status ?? "").trim().toLowerCase();
+	if (TERMINAL_STATUSES.has(normalized)) {
+		const label = normalized === "cancelled" ? "cancelled" : `marked '${normalized}'`;
+		return { terminal: true, reason: `Task is ${label}.` };
 	}
 	return null;
 }

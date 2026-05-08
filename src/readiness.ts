@@ -293,8 +293,10 @@ function assessDependencies(task: ParsedTask): ReadinessDimension {
  * Assess the Feasibility dimension: Can this actually be done?
  */
 function assessFeasibility(task: ParsedTask): ReadinessDimension {
-	// Check task status
-	if (task.status === "cancelled") {
+	// Check task status — recognize Pinch's `done`/`resolved` vocabulary alongside
+	// Arbiter's original `completed`/`cancelled`. Case-insensitive.
+	const normalizedStatus = String(task.status ?? "").trim().toLowerCase();
+	if (normalizedStatus === "cancelled") {
 		return {
 			dimension: "feasibility",
 			state: "blocked",
@@ -302,12 +304,11 @@ function assessFeasibility(task: ParsedTask): ReadinessDimension {
 			blockerType: "policy",
 		};
 	}
-
-	if (task.status === "completed") {
+	if (normalizedStatus === "completed" || normalizedStatus === "done" || normalizedStatus === "resolved") {
 		return {
 			dimension: "feasibility",
 			state: "blocked",
-			reason: "Task is already completed.",
+			reason: `Task is marked '${normalizedStatus}'.`,
 			blockerType: "policy",
 		};
 	}

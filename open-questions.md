@@ -84,6 +84,78 @@ Tests: see `__tests__/action-selector.test.ts` "per-agent threshold overrides" a
 
 ---
 
+### OQ-012: Priority flag + user-action mechanism (NEW, raised 2026-05-08)
+
+**Status**: OPEN — target v0.5.0
+**Raised by**: Matt, after first successful 0.4.0 assessment in the vault.
+
+**Problem**: Two related but distinct asks on the same day:
+1. **Priority flag** — Matt wants a way to mark a task "do this first" so the dispatcher (Claude / Pinch) picks it ahead of others.
+2. **User-action mechanism** — Matt wants the act of flagging to be cheap: a button, a command, or a checkbox in the card. Not "edit frontmatter manually every time."
+
+**Common confusion to resolve up front**: Matt asked "is that putting it in the 'escalation' column?" — there is **no escalation column** in Arbiter. ESC is an *action* Arbiter selects when authority/risk dims block (mapped to `BLOCKER_TO_ACTION["risk"|"capability"]`). Priority is **orthogonal** to ESC: a high-priority task may be totally agent-doable (no ESC needed). A task that needs ESC may be low priority (just awaits eventual approval). Conflating them in one column blurs concepts that should stay separate.
+
+---
+
+#### Design space — three independent decisions
+
+##### Decision A — what *is* a priority signal?
+
+| Option | Shape | Pros | Cons |
+|---|---|---|---|
+| **A1**: Reuse `urgency_date` (existing) | Past date = overdue = priority | No new field; Pinch already populates this for some tasks | Date-based only — can't say "do this regardless of date." Currently the readiness assessor doesn't actually act on past dates (comment in `readiness.ts:assessDependencies` says "handled elsewhere" but elsewhere is empty) |
+| **A2**: New `priority: urgent\|high\|normal\|low` enum | 4-level ordinal | Expressive; matches common Kanban conventions | New field; choice fatigue |
+| **A3**: New `priority_flagged: true` boolean | Binary on/off | Simplest | Less expressive; can't differentiate urgent vs. high |
+| **A4**: New `priority_until: <ISO date>` | Time-bounded urgent flag | Self-clearing | Two dates to manage |
+
+##### Decision B — what does priority *do*?
+
+| Option | Effect | Risk |
+|---|---|---|
+| **B1**: Sort order in `/arbiter-read` output (priority-bumped cards returned first) | Pure dispatcher concern; Arbiter assessment unchanged | None — the most conservative |
+| **B2**: Bypasses confidence threshold gate (priority cards admit medium-confidence EXE even at default 0.7 threshold) | Faster dispatch on Matt-flagged work | Could ship medium-confidence EXEs that fail; mostly OK because Matt flagged it |
+| **B3**: Sets `arbiter_action: EXE` directly, bypassing readiness | "Just do it" override | Defeats the point of Arbiter — risk of premature execution. Only consider for cases Matt has explicitly inspected |
+
+##### Decision C — what's the user-action mechanism?
+
+| Option | Shape | Pros | Cons |
+|---|---|---|---|
+| **C1**: Edit frontmatter manually | `priority: urgent` typed in YAML | Zero plugin work | High friction; the asked-against pattern |
+| **C2**: Plugin command palette entry: "Arbiter: Toggle priority" | Cycles current note's priority field | Native Obsidian UX; no extra UI | Cmd+P → type → enter every time |
+| **C3**: Status bar quick-toggle button | Click once to mark priority | Always visible; one-click | Plugin UI work; only operates on active note |
+| **C4**: Inline checkbox in body: `- [ ] **Priority**` | Markdown-native | Reads well in Obsidian | Plugin scans body for checkbox state; less standard than frontmatter |
+| **C5**: Status-bar action menu with several toggles (priority, defer, snooze) | Future hub | Scales to other Matt-actions | Larger feature, defer past v0.5.0 |
+
+---
+
+#### Recommended path (subject to Matt's call)
+
+**A2 + B1 + C2** — i.e., new `priority: urgent\|high\|normal\|low` field (default `normal`); `/arbiter-read` sorts dispatchable cards by priority before returning; plugin adds a single command "Arbiter: Toggle priority" that cycles the current note's frontmatter value.
+
+Rationale:
+- **A2 over A1**: `urgency_date` is already there but doesn't work as a priority signal today (the assessor ignores past dates). Adding `priority` as a dedicated field separates "deadline" from "Matt says first" and avoids retrofitting the existing field.
+- **B1 over B2/B3**: Conservative — Arbiter's job (assessment) stays uncoupled from the dispatcher's job (ordering). If priority ever needs to override the gate, that's a future B2 decision once we see how B1 performs.
+- **C2 over C1/C3/C4**: Lowest plugin work that still gives Matt a one-keystroke action. Status bar button (C3) can come later if Cmd+P friction is real.
+
+**Out of scope for v0.5.0** (deferred to v0.6.0+): inline checkbox parsing (C4), status-bar quick-toggle (C3), priority bypassing the confidence gate (B2).
+
+#### Implementation sketch (when greenlit)
+
+- `types.ts`: add `priority?: "urgent" | "high" | "normal" | "low"` to `ParsedTask`; default to `"normal"` in `parseTask` when absent.
+- `task-parser.ts`: read `priority` from frontmatter (case-insensitive).
+- New helper `priorityRank(p): number` — `urgent=0, high=1, normal=2, low=3`. Lower = sorted first.
+- `/arbiter-read` skill (NOT in this repo — it's in `MLG.Github/.claude/skills/arbiter-read/`): after Phase 6 (capacity), sort dispatchable list by `priorityRank(card.priority)` ascending, then by some tiebreak (urgency_date or filename).
+- `main.ts`: new command `arbiter:toggle-priority` that reads current note frontmatter, cycles `priority` (urgent → high → normal → low → urgent), writes back. Status bar shows current priority of active note (optional).
+- Test: `arbiter-read` returns priority-flagged cards first; toggle command cycles correctly.
+
+#### What this question explicitly does NOT propose
+
+- A new "priority" column. The Kanban model stays at proposed → next → in-progress → done. Priority is a within-column ordering signal, not a structural one.
+- An "escalation" column. ESC remains an action, not a status. Cards Arbiter scores ESC can sit in `next/` with `arbiter_action: ESC` and the dispatcher (`/arbiter-read`) skips them with a clear reason.
+- Bypassing readiness assessment for priority items. Even priority items must pass the gate; priority just affects dispatch order among gate-passing cards.
+
+---
+
 ## Priority 3 — Lower urgency / scoped out
 
 ### OQ-008: Dataview/Templater compatibility

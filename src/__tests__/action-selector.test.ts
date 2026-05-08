@@ -411,6 +411,36 @@ Read documentation and summarize.
 		expect(claudeRecord.action).not.toBe("EXE");
 	});
 
+	it("recognizes Pinch's 'done' and 'resolved' as terminal statuses (DECL, not EXE)", () => {
+		const cases: Array<{ status: string; label: string }> = [
+			{ status: "done", label: "done" },
+			{ status: "resolved", label: "resolved" },
+			{ status: "DONE", label: "case-insensitive" },
+			{ status: "completed", label: "legacy completed" },
+			{ status: "cancelled", label: "legacy cancelled" },
+		];
+		for (const { status, label } of cases) {
+			const content = `---
+title: "Already finished — ${label}"
+type: task-execution
+status: ${status}
+owner: pinch
+---
+
+## Outcome
+Should never EXE — terminal state.
+
+## Execution Steps
+- [x] Done already
+`;
+			const task = parseTask(content, "test.md");
+			const readiness = assessReadiness(task);
+			const record = selectAction(task, readiness);
+			expect(record.action).toBe("DECL");
+			expect(record.terminal).toBe(true);
+		}
+	});
+
 	it("hard-block BLOCKED still wins over confidence config — no per-agent unlock for blocked dims", () => {
 		// Status cancelled → Feasibility blocked (terminal state caught earlier as DECL)
 		// To exercise the hard-block path proper, use needs_matt_review without approval
