@@ -140,3 +140,83 @@ Do the thing.`;
 		expect(task.owner).toBe("unknown");
 	});
 });
+
+describe("v0.5.0 fields: matt_approved and priority", () => {
+	it("parses matt_approved as boolean", () => {
+		const content = `---
+title: "Approved task"
+type: task-execution
+status: active
+owner: matt
+matt_approved: true
+---
+body`;
+		const task = parseTask(content, "test.md");
+		expect(task.mattApproved).toBe(true);
+	});
+
+	it("treats missing matt_approved as false", () => {
+		const content = `---
+title: "No approval flag"
+type: task-execution
+status: active
+owner: matt
+---
+body`;
+		const task = parseTask(content, "test.md");
+		expect(task.mattApproved).toBe(false);
+	});
+
+	it("parses priority enum (urgent/high/normal/low)", () => {
+		for (const p of ["urgent", "high", "normal", "low"]) {
+			const content = `---
+title: "Priority test"
+type: task-execution
+status: active
+owner: matt
+priority: ${p}
+---
+body`;
+			const task = parseTask(content, "test.md");
+			expect(task.priority).toBe(p);
+		}
+	});
+
+	it("returns undefined for invalid priority values", () => {
+		const content = `---
+title: "Invalid priority"
+type: task-execution
+status: active
+owner: matt
+priority: super-urgent
+---
+body`;
+		const task = parseTask(content, "test.md");
+		expect(task.priority).toBeUndefined();
+	});
+
+	it("returns undefined when priority is absent", () => {
+		const content = `---
+title: "No priority"
+type: task-execution
+status: active
+owner: matt
+---
+body`;
+		const task = parseTask(content, "test.md");
+		expect(task.priority).toBeUndefined();
+	});
+
+	it("priority is case-insensitive", () => {
+		const content = `---
+title: "Case test"
+type: task-execution
+status: active
+owner: matt
+priority: URGENT
+---
+body`;
+		const task = parseTask(content, "test.md");
+		expect(task.priority).toBe("urgent");
+	});
+});

@@ -1,5 +1,13 @@
-import type { ParsedTask, PreconditionItem, TaskSections } from "./types";
+import type { ParsedTask, PreconditionItem, Priority, TaskSections } from "./types";
 import { computeTaskRevision } from "./sync-protocol";
+
+const VALID_PRIORITIES: ReadonlySet<Priority> = new Set(["urgent", "high", "normal", "low"]);
+
+function parsePriority(raw: unknown): Priority | undefined {
+	if (typeof raw !== "string") return undefined;
+	const normalized = raw.trim().toLowerCase() as Priority;
+	return VALID_PRIORITIES.has(normalized) ? normalized : undefined;
+}
 
 /**
  * Parse YAML frontmatter from markdown content.
@@ -154,6 +162,11 @@ export function parseTask(content: string, filePath: string): ParsedTask {
 			: frontmatter.project_tag
 				? [String(frontmatter.project_tag)]
 				: undefined,
+
+		// v0.5.0 user-controlled flags
+		mattApproved:
+			frontmatter.matt_approved === true || frontmatter.matt_approved === "true",
+		priority: parsePriority(frontmatter.priority),
 
 		// Arbiter fields
 		arbiterAction: frontmatter.arbiter_action as ParsedTask["arbiterAction"],

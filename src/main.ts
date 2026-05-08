@@ -1,13 +1,21 @@
 import { Notice, Plugin, TFile, TFolder, WorkspaceLeaf, normalizePath } from "obsidian";
-import type { ActionRecord, ArbiterSettings, ConfidenceConfig, PolicyRule } from "./types";
+import type { ActionRecord, ArbiterSettings, ConfidenceConfig, PolicyRule, Priority } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
 import { parseTask } from "./task-parser";
 import { assessReadiness } from "./readiness";
 import { selectAction } from "./action-selector";
 import { parsePolicy } from "./policy-parser";
-import { updateTaskContent, formatLogEntry, formatAssessmentBlock } from "./action-recorder";
+import {
+	updateTaskContent,
+	formatLogEntry,
+	formatAssessmentBlock,
+	setFrontmatterField,
+} from "./action-recorder";
 import { ArbiterSettingTab } from "./settings";
 import { ArbiterKanbanView, ARBITER_KANBAN_VIEW_TYPE } from "./kanban-view";
+
+/** v0.5.0: priority cycle order for the toggle command. */
+const PRIORITY_CYCLE: readonly Priority[] = ["normal", "high", "urgent", "low"] as const;
 
 export default class ArbiterPlugin extends Plugin {
 	settings: ArbiterSettings = DEFAULT_SETTINGS;
@@ -62,6 +70,20 @@ export default class ArbiterPlugin extends Plugin {
 			id: "open-kanban-view",
 			name: "Open Kanban view",
 			callback: () => this.activateKanbanView(),
+		});
+
+		// v0.5.0 — Toggle matt_approved on the active note
+		this.addCommand({
+			id: "toggle-approved",
+			name: "Toggle approved",
+			callback: () => this.toggleApproved(),
+		});
+
+		// v0.5.0 — Cycle priority on the active note (normal → high → urgent → low → normal)
+		this.addCommand({
+			id: "cycle-priority",
+			name: "Cycle priority",
+			callback: () => this.cyclePriority(),
 		});
 
 		// Add a ribbon icon for one-click access to the Kanban
@@ -143,8 +165,13 @@ export default class ArbiterPlugin extends Plugin {
 
 	/**
 	 * Core assessment logic: parse task, check readiness, select action, record result.
+	 *
+	 * `silent`: when true, suppresses the per-file Notice. Used by Kanban
+	 * view's "Assess all" so a 30+ task batch doesn't flood the UI with
+	 * toast notifications. Errors still log to console + Notice in silent
+	 * mode (you DO want to know about failures).
 	 */
-	async assessFile(file: TFile): Promise<ActionRecord | null> {
+	async assessFile(file: TFile, silent = false): Promise<ActionRecord | null> {
 		try {
 			const content = await this.app.vault.read(file);
 			const task = parseTask(content, file.path);
@@ -177,7 +204,7 @@ export default class ArbiterPlugin extends Plugin {
 				await this.writeToMachineLog(record, file.path);
 			}
 
-			// Show notice
+			// Show notice (suppressed in silent mode for batch assess-all)
 			const actionLabel = record.action;
 			const icon =
 				record.action === "EXE"
@@ -187,9 +214,11 @@ export default class ArbiterPlugin extends Plugin {
 						: record.action === "ASK"
 							? "❓"
 							: "⚠";
-			new Notice(`Arbiter: ${icon} ${actionLabel} — ${record.nextAction.slice(0, 80)}`);
+			if (!silent) {
+				new Notice(`Arbiter: ${icon} ${actionLabel} — ${record.nextAction.slice(0, 80)}`);
+			}
 
-			// Update status bar
+			// Update status bar (always — reflects the latest assessed task)
 			if (this.statusBarEl) {
 				this.statusBarEl.setText(`Arbiter: ${icon} ${actionLabel}`);
 			}
@@ -371,6 +400,50 @@ applies_to: "*"
 		}
 
 		if (leaf) workspace.revealLeaf(leaf);
+	}
+
+	/**
+	 * v0.5.0 — Toggle the `matt_approved` flag on the currently active note.
+	 * Used to opt a card into the "Up Next" dispatch queue. Required because
+	 * even a green-readiness card should not auto-dispatch without explicit
+	 * Matt approval (per OQ-015).
+	 */
+	async toggleApproved(): Promise<void> {
+		const file = this.app.workspace.getActiveFile();
+		if (!file) {
+			new Notice("Arbiter: No active file.");
+			return;
+		}
+		const content = await this.app.vault.read(file);
+		const task = parseTask(content, file.path);
+		const next = !task.mattApproved;
+		const updated = setFrontmatterField(content, "matt_approved", next);
+		await this.app.vault.modify(file, updated);
+		new Notice(`Arbiter: ${next ? "✅ approved" : "◯ unapproved"} — ${file.basename}`);
+	}
+
+	/**
+	 * v0.5.0 — Cycle the `priority` field on the active note.
+	 * Order: normal → high → urgent → low → normal.
+	 * Drives "Up Next" sort order (urgent first). Does NOT affect Arbiter's
+	 * readiness assessment.
+	 */
+	async cyclePriority(): Promise<void> {
+		const file = this.app.workspace.getActiveFile();
+		if (!file) {
+			new Notice("Arbiter: No active file.");
+			return;
+		}
+		const content = await this.app.vault.read(file);
+		const task = parseTask(content, file.path);
+		const current = task.priority ?? "normal";
+		const idx = PRIORITY_CYCLE.indexOf(current);
+		const next = PRIORITY_CYCLE[(idx + 1) % PRIORITY_CYCLE.length];
+		const updated = setFrontmatterField(content, "priority", next);
+		await this.app.vault.modify(file, updated);
+		const icon =
+			next === "urgent" ? "🔥" : next === "high" ? "⬆" : next === "low" ? "⬇" : "·";
+		new Notice(`Arbiter: ${icon} priority = ${next} — ${file.basename}`);
 	}
 
 	/**

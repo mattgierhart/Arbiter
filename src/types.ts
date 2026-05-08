@@ -20,6 +20,22 @@ export type ReadinessState = "ready" | "partial" | "blocked";
 /** Confidence level for action selection */
 export type ConfidenceLevel = "high" | "medium" | "low";
 
+/**
+ * v0.5.0 Component E: priority levels for dispatch queue ordering.
+ * Set by Matt via the "Arbiter: Cycle priority" command. Affects sort order
+ * of dispatchable cards in the Kanban "Up Next" strip — does NOT affect
+ * Arbiter's assessment (a low-priority task with all dims ready still EXEs).
+ */
+export type Priority = "urgent" | "high" | "normal" | "low";
+
+/**
+ * v0.5.0 Component C: simplified visual state for the Kanban view.
+ * The internal 7-action model is preserved; this is purely the color
+ * collapse for human scanning. CTX is mapped to green for v0.5.0
+ * (agent self-serves context); revisit if false-greens emerge. See OQ-014.
+ */
+export type ReadinessColor = "green" | "yellow" | "red" | "grey";
+
 /** Task types from Pinch's existing format */
 export type TaskType = "task-execution" | "task-research" | string;
 
@@ -153,6 +169,14 @@ export interface ParsedTask {
 	needsMattReview?: boolean;
 	urgencyDate?: string;
 	projectTag?: string[];
+
+	// v0.5.0 user-controlled flags (Matt sets via toggle commands)
+	/** OQ-015: positive opt-in for autonomous dispatch. Distinct from
+	 * needsMattReview (which is a negative gate). Both can be true:
+	 * the task was gated, Matt approved → dispatch. */
+	mattApproved?: boolean;
+	/** OQ-012: dispatch-queue sort order. Affects "Up Next" only. */
+	priority?: Priority;
 
 	// Arbiter-managed fields (may already exist from prior assessment)
 	arbiterAction?: ActionType;

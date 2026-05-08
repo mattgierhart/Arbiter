@@ -1,7 +1,8 @@
 import { ItemView, Notice, TFile, TFolder, WorkspaceLeaf, normalizePath } from "obsidian";
 import type ArbiterPlugin from "./main";
-import type { ActionType, BlockerType, ConfidenceLevel } from "./types";
+import type { ActionType, BlockerType, ConfidenceLevel, Priority, ReadinessColor } from "./types";
 import { parseTask } from "./task-parser";
+import { actionToColor, getDispatchQueue, type QueueTask } from "./dispatch-queue";
 
 /**
  * Arbiter Kanban View
@@ -20,6 +21,22 @@ import { parseTask } from "./task-parser";
  */
 
 export const ARBITER_KANBAN_VIEW_TYPE = "arbiter-kanban";
+
+/**
+ * v0.5.0 OQ-013: a file looks like a task when its frontmatter explicitly
+ * declares title, type, and status. parseTask falls back to defaults for
+ * missing fields, so we check the RAW frontmatter to distinguish "real
+ * task" from "incidental .md file in a discovery folder" (READMEs, indexes,
+ * Pinch's test fixtures, etc.).
+ */
+function isLikelyTask(task: import("./types").ParsedTask): boolean {
+	const fm = task.rawFrontmatter;
+	return (
+		typeof fm.title === "string" &&
+		typeof fm.type === "string" &&
+		typeof fm.status === "string"
+	);
+}
 
 /** Column order left-to-right on the board. UNASSESSED catches everything without an arbiter_action. */
 const COLUMN_ORDER: readonly (ActionType | "UNASSESSED")[] = [
@@ -66,7 +83,7 @@ const COLUMN_DESCRIPTIONS: Record<string, string> = {
 	DECL: "Out of scope, infeasible, or terminal",
 };
 
-interface KanbanTask {
+interface KanbanTask extends QueueTask {
 	title: string;
 	path: string;
 	action: ActionType | "UNASSESSED";
@@ -78,6 +95,14 @@ interface KanbanTask {
 	urgencyDate?: string;
 	capabilityPrimary?: string;
 	type?: string;
+	// v0.5.0 fields exposed for the Up Next filter + color mapping
+	mattApproved?: boolean;
+	priority?: Priority;
+	taskRevision?: string;
+	arbiterAssessedRevision?: string;
+	// QueueTask requires arbiterAction + arbiterLastAssessed; mirror them from action/lastAssessed
+	arbiterAction?: ActionType;
+	arbiterLastAssessed?: string;
 }
 
 export class ArbiterKanbanView extends ItemView {
@@ -181,6 +206,12 @@ export class ArbiterKanbanView extends ItemView {
 				try {
 					const content = await this.app.vault.read(child);
 					const task = parseTask(content, child.path);
+					// v0.5.0 OQ-013: skip files that don't look like tasks.
+					// A "task" here means: has explicit title + type + status frontmatter.
+					// This filters out READMEs, indexes, and stub notes that happen to
+					// live in a discovery folder. parseTask is lenient and fills in
+					// defaults — we check the raw frontmatter to detect intent.
+					if (!isLikelyTask(task)) continue;
 					out.push({
 						title: task.title || child.basename,
 						path: child.path,
@@ -193,6 +224,13 @@ export class ArbiterKanbanView extends ItemView {
 						urgencyDate: task.urgencyDate,
 						capabilityPrimary: task.capabilityPrimary,
 						type: task.type,
+						mattApproved: task.mattApproved,
+						priority: task.priority,
+						taskRevision: task.taskRevision,
+						arbiterAssessedRevision: task.arbiterAssessedRevision,
+						// Mirror for QueueTask compatibility
+						arbiterAction: task.arbiterAction,
+						arbiterLastAssessed: task.arbiterLastAssessed,
 					});
 				} catch (err) {
 					// Skip unreadable files silently; log once to console.
@@ -231,6 +269,11 @@ export class ArbiterKanbanView extends ItemView {
 		});
 		assessAllBtn.addEventListener("click", () => this.assessAll());
 
+		// v0.5.0 — "Up Next" strip: dispatchable cards, sorted by priority then urgency.
+		// A card is dispatchable when arbiter_action=EXE AND matt_approved=true AND
+		// the SYNC-001 revision pin is fresh. See dispatch-queue.ts.
+		this.renderUpNext(container);
+
 		// Group tasks by column
 		const grouped: Record<string, KanbanTask[]> = {};
 		for (const col of COLUMN_ORDER) grouped[col] = [];
@@ -248,9 +291,94 @@ export class ArbiterKanbanView extends ItemView {
 		// Footer with legend
 		const footer = container.createDiv({ cls: "arbiter-kanban-footer" });
 		footer.createEl("span", {
-			text: "Click a card to open the task note. Auto-refreshes on file changes.",
+			text: "Click a card to open the task note. Auto-refreshes on file changes. Cards show readiness color (green/yellow/red) on left border.",
 			cls: "arbiter-kanban-legend",
 		});
+	}
+
+	/**
+	 * v0.5.0 — Render the "Up Next" strip at the top of the board.
+	 *
+	 * Shows cards that are READY to dispatch right now: arbiter_action=EXE,
+	 * matt_approved=true, SYNC-001 fresh. Sorted by priority (urgent first)
+	 * then by urgencyDate. Each card click opens the underlying file.
+	 *
+	 * Cap at 5 entries to keep the strip a focused dispatch queue, not a
+	 * second board. Below 5: "no dispatchable tasks — toggle approval on a
+	 * green card to add" hint so the empty state is actionable.
+	 */
+	private renderUpNext(container: HTMLElement): void {
+		const queue = getDispatchQueue(this.tasks).slice(0, 5);
+
+		const strip = container.createDiv({ cls: "arbiter-kanban-upnext" });
+		const stripHeader = strip.createDiv({ cls: "arbiter-kanban-upnext-header" });
+		stripHeader.createEl("span", {
+			text: "▶▶",
+			cls: "arbiter-kanban-upnext-icon",
+		});
+		stripHeader.createEl("span", {
+			text: "Up Next",
+			cls: "arbiter-kanban-upnext-title",
+		});
+		stripHeader.createEl("span", {
+			text: `${queue.length} ready to dispatch`,
+			cls: "arbiter-kanban-upnext-count",
+		});
+
+		const cardsRow = strip.createDiv({ cls: "arbiter-kanban-upnext-cards" });
+		if (queue.length === 0) {
+			cardsRow.createDiv({
+				cls: "arbiter-kanban-upnext-empty",
+				text:
+					"No dispatchable tasks. A card needs arbiter_action: EXE + matt_approved: true + a fresh assessment. Use 'Arbiter: Toggle approved' on a green card.",
+			});
+			return;
+		}
+		for (const task of queue) {
+			this.renderUpNextCard(cardsRow, task);
+		}
+	}
+
+	private renderUpNextCard(parent: HTMLElement, task: KanbanTask): void {
+		const card = parent.createDiv({ cls: "arbiter-kanban-upnext-card" });
+		card.addClass(`arbiter-kanban-card-color-${actionToColor(task.action)}`);
+		if (task.priority) {
+			card.addClass(`arbiter-kanban-card-priority-${task.priority}`);
+		}
+
+		card.addEventListener("click", async () => {
+			const file = this.app.vault.getAbstractFileByPath(task.path);
+			if (file instanceof TFile) {
+				await this.app.workspace.getLeaf(false).openFile(file);
+			}
+		});
+
+		const titleEl = card.createDiv({ cls: "arbiter-kanban-upnext-card-title" });
+		if (task.priority && task.priority !== "normal") {
+			const badge = titleEl.createEl("span", {
+				cls: `arbiter-kanban-priority-badge arbiter-kanban-priority-${task.priority}`,
+			});
+			badge.setText(task.priority === "urgent" ? "🔥" : task.priority === "high" ? "⬆" : "⬇");
+		}
+		titleEl.appendText(task.title);
+
+		const meta = card.createDiv({ cls: "arbiter-kanban-upnext-card-meta" });
+		meta.createEl("span", {
+			cls: "arbiter-kanban-chip arbiter-kanban-chip-approved",
+			text: "✅ approved",
+		});
+		if (task.urgencyDate) {
+			meta.createEl("span", {
+				cls: "arbiter-kanban-chip arbiter-kanban-chip-urgency",
+				text: `due ${task.urgencyDate}`,
+			});
+		}
+		if (task.capabilityPrimary) {
+			meta.createEl("span", {
+				cls: "arbiter-kanban-chip arbiter-kanban-chip-cap",
+				text: task.capabilityPrimary,
+			});
+		}
 	}
 
 	private renderColumn(
@@ -295,11 +423,19 @@ export class ArbiterKanbanView extends ItemView {
 
 	private renderCard(parent: HTMLElement, task: KanbanTask): void {
 		const card = parent.createDiv({ cls: "arbiter-kanban-card" });
+		// v0.5.0 — color border driven by 3-state model (action → red/yellow/green/grey)
+		card.addClass(`arbiter-kanban-card-color-${actionToColor(task.action)}`);
 		if (task.confidence) {
 			card.addClass(`arbiter-kanban-card-conf-${task.confidence}`);
 		}
 		if (task.needsHuman) {
 			card.addClass("arbiter-kanban-card-needs-human");
+		}
+		if (task.mattApproved) {
+			card.addClass("arbiter-kanban-card-approved");
+		}
+		if (task.priority && task.priority !== "normal") {
+			card.addClass(`arbiter-kanban-card-priority-${task.priority}`);
 		}
 
 		// Click-to-open
@@ -310,12 +446,29 @@ export class ArbiterKanbanView extends ItemView {
 			}
 		});
 
-		// Title row
+		// Title row — priority badge inline with title for scanability
 		const titleEl = card.createDiv({ cls: "arbiter-kanban-card-title" });
-		titleEl.setText(task.title);
+		if (task.priority && task.priority !== "normal") {
+			const badge = titleEl.createEl("span", {
+				cls: `arbiter-kanban-priority-badge arbiter-kanban-priority-${task.priority}`,
+			});
+			badge.setText(
+				task.priority === "urgent" ? "🔥" : task.priority === "high" ? "⬆" : "⬇",
+			);
+			badge.setAttribute("title", `Priority: ${task.priority}`);
+		}
+		titleEl.appendText(task.title);
 
 		// Meta row
 		const meta = card.createDiv({ cls: "arbiter-kanban-card-meta" });
+
+		if (task.mattApproved) {
+			const approved = meta.createEl("span", {
+				cls: "arbiter-kanban-chip arbiter-kanban-chip-approved",
+			});
+			approved.setText("✅ approved");
+			approved.setAttribute("title", "matt_approved: true — opted in for autonomous dispatch");
+		}
 
 		if (task.confidence) {
 			const conf = meta.createEl("span", {
@@ -366,27 +519,34 @@ export class ArbiterKanbanView extends ItemView {
 
 	/**
 	 * Run Arbiter assessment on every task currently listed in the view.
-	 * Used for a batch pass — e.g., after editing multiple task notes by hand.
+	 * v0.5.0: silent mode — per-file Notices suppressed, single summary at end.
+	 * Resolves the "Assess all errors" issue (see PRD §12.1 / OQ-013).
 	 */
 	private async assessAll(): Promise<void> {
 		let assessed = 0;
 		let failed = 0;
+		const total = this.tasks.length;
+		// One progress notice that we don't dismiss (Obsidian auto-dismisses on next),
+		// then a final summary. No per-file spam.
+		new Notice(`Arbiter: assessing ${total} task${total === 1 ? "" : "s"}…`, 2000);
 		for (const task of this.tasks) {
 			const file = this.app.vault.getAbstractFileByPath(task.path);
 			if (!(file instanceof TFile)) continue;
 			try {
-				await this.plugin.assessFile(file);
-				assessed++;
+				const result = await this.plugin.assessFile(file, /* silent */ true);
+				if (result === null) {
+					failed++;
+				} else {
+					assessed++;
+				}
 			} catch {
 				failed++;
 			}
 		}
-		// Refresh the view to show new assessments
 		await this.refresh();
 		new Notice(
-			`Arbiter: assessed ${assessed} task${assessed === 1 ? "" : "s"}${
-				failed > 0 ? `, ${failed} failed` : ""
-			}.`
+			`Arbiter: assessed ${assessed} of ${total}${failed > 0 ? `, ${failed} failed (see console)` : ""}.`,
+			6000
 		);
 	}
 }

@@ -164,6 +164,60 @@ function updateAssessmentSection(
 }
 
 /**
+ * Set or update a single frontmatter field in markdown content.
+ * Used by the v0.5.0 toggle commands (matt_approved, priority).
+ *
+ * - If frontmatter exists, finds the key and replaces the line, OR appends
+ *   the key if not present.
+ * - If no frontmatter exists, creates one with just this field.
+ * - Boolean values render bare (`true` / `false`); strings render unquoted
+ *   when they're plain identifiers, double-quoted otherwise.
+ */
+export function setFrontmatterField(
+	content: string,
+	key: string,
+	value: string | boolean | null,
+): string {
+	const formatted = formatFrontmatterValue(value);
+	const fmMatch = content.match(/^(---\r?\n)([\s\S]*?)(\r?\n---\r?\n?)/);
+
+	if (!fmMatch) {
+		if (value === null) return content; // nothing to remove from no-frontmatter file
+		return `---\n${key}: ${formatted}\n---\n${content}`;
+	}
+
+	const fmStart = fmMatch[1];
+	let fmBody = fmMatch[2];
+	const fmEnd = fmMatch[3];
+	const afterFm = content.slice(fmMatch[0].length);
+
+	const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const pattern = new RegExp(`^${escapedKey}:.*$`, "m");
+
+	if (value === null) {
+		// Remove the line if present, otherwise no-op
+		if (pattern.test(fmBody)) {
+			fmBody = fmBody.replace(pattern, "").replace(/\n\n+/g, "\n");
+		}
+	} else if (pattern.test(fmBody)) {
+		fmBody = fmBody.replace(pattern, `${key}: ${formatted}`);
+	} else {
+		fmBody = fmBody.trimEnd() + `\n${key}: ${formatted}`;
+	}
+
+	return fmStart + fmBody + fmEnd + afterFm;
+}
+
+function formatFrontmatterValue(value: string | boolean | null): string {
+	if (typeof value === "boolean") return String(value);
+	if (value === null) return "null";
+	// Plain identifier — no quotes needed
+	if (/^[a-z][a-z0-9_-]*$/i.test(value)) return value;
+	// Otherwise quote, escaping internal quotes
+	return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+/**
  * Format a machine log entry for the optional append-only event log.
  */
 export function formatLogEntry(
