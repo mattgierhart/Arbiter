@@ -38,7 +38,7 @@ export function validateSettings(s: unknown): ValidationResult {
 	}
 
 	// Booleans
-	for (const key of ["autoAssessOnChange", "enableMachineLog", "syncProtocolEnabled"]) {
+	for (const key of ["autoAssessOnChange", "enableMachineLog", "syncProtocolEnabled", "laneAwareAssessments"]) {
 		if (typeof cfg[key] !== "boolean") {
 			errors.push(`${key} must be a boolean`);
 		}

@@ -407,36 +407,43 @@ Inspiration: Routa's "lane specialists get stricter downstream" pattern — same
 
 ### 13.4 Spec — evidence pointers per readiness dimension
 
-Each dimension currently returns `{score, blocking, reasons: string[]}`. The new shape:
+Each dimension currently returns `{dimension, state, reason: string, blockerType?}`. The reason is a single freeform string built by joining sub-issues with `;`. The new shape adds an `evidence` field alongside `reason`:
 
 ```ts
 type EvidenceAtom = {
   kind: "frontmatter" | "body-section" | "link" | "policy" | "missing";
-  ref: string;                  // e.g. "frontmatter.acceptance_criteria"
-                                //      "body §Acceptance (lines 12-18)"
+  ref: string;                  // e.g. "frontmatter.outcome"
+                                //      "body §Outcome (line 14)"
                                 //      "[[OTHER-TASK]]"
                                 //      "policy:dor-defaults.md"
-                                //      "missing: done definition"
+                                //      "missing: outcome section"
   note?: string;                // short freeform if needed
+  polarity: "supports" | "blocks" | "neutral";
+                                // does this atom argue for ready, against, or
+                                // is it contextual? lets the recorder render
+                                // ✅/⚠️/ℹ️ icons without re-deriving from state.
 };
 
-type DimensionResult = {
-  score: number;
-  blocking: boolean;
-  evidence: EvidenceAtom[];     // replaces `reasons: string[]`
-};
+interface ReadinessDimension {
+  dimension: "clarity" | "context" | "scope" | "authority" | "dependencies" | "feasibility";
+  state: "ready" | "partial" | "blocked";
+  reason: string;               // retained for back-compat and machine log
+  blockerType?: BlockerType;
+  evidence?: EvidenceAtom[];    // v0.6.0+ — populated when laneAwareAssessments
+                                // is on, or whenever an assessor opts in.
+}
 ```
 
 Rendering in the assessment block:
 
 ```markdown
-### Clarity — 0.8
+### Clarity — partial
 - ✅ Title is specific (`frontmatter.title`)
-- ✅ Acceptance criteria present (`body §Acceptance, lines 12-18`)
-- ⚠️ No "done definition" found (`missing: done definition`)
+- ⚠️ Outcome too brief to be actionable (`body §Outcome, line 14`)
+- ⚠️ No "done definition" found (`missing: doneCriteria`)
 ```
 
-Migration: `reasons: string[]` is removed from the engine output in this release. Historical assessments already written into vault notes are not re-rendered (per ARC-002 inline = current truth, machine log = append-only history). Machine log readers must accept both shapes during the transition window.
+Migration plan: `evidence` ships as **optional** in v0.6.0 — every assessor populates it where it adds clarity, but old `reason: string`-only payloads still render via a fallback in the recorder. `reason` is retained indefinitely for the machine log (append-only history doesn't need to be re-rendered). The recorder prefers `evidence` when present, falls back to `reason` otherwise.
 
 No frontmatter schema change on task notes — evidence lives in the assessment block + machine log only.
 
