@@ -247,12 +247,19 @@ function formatFrontmatterValue(value: string | boolean | null): string {
 
 /**
  * Format a machine log entry for the optional append-only event log.
+ *
+ * v0.6.0: when `readiness` is provided, the log entry includes a structured
+ * dimension-by-dimension evidence dump. This is what `/portfolio-retro`
+ * reads to answer "did Clarity evidence change between assessment N-1
+ * and N?" (PRD §13.9 acceptance #4). When omitted, the entry uses the
+ * v0.5.0 format — back-compat preserved.
  */
 export function formatLogEntry(
 	record: ActionRecord,
-	taskPath: string
+	taskPath: string,
+	readiness?: ReadinessResult,
 ): string {
-	return [
+	const lines: (string | null)[] = [
 		`## ${formatTimestamp(record.lastAssessed)}`,
 		`- **Task**: ${taskPath}`,
 		`- **Action**: ${record.action}`,
@@ -261,10 +268,25 @@ export function formatLogEntry(
 		`- **Next**: ${record.nextAction}`,
 		record.humanAsk ? `- **Ask**: ${record.humanAsk}` : null,
 		record.wakeCondition ? `- **Wake**: ${record.wakeCondition}` : null,
-		"",
-	]
-		.filter(Boolean)
-		.join("\n");
+	];
+
+	if (readiness) {
+		lines.push("- **Dimensions**:");
+		for (const dim of readiness.dimensions) {
+			lines.push(`  - ${DIMENSION_LABEL[dim.dimension]} (${dim.state}):`);
+			if (dim.evidence && dim.evidence.length > 0) {
+				for (const atom of dim.evidence) {
+					const note = atom.note ? ` — ${atom.note}` : "";
+					lines.push(`    - [${atom.polarity}] ${atom.kind}:${atom.ref}${note}`);
+				}
+			} else {
+				lines.push(`    - [reason] ${dim.reason}`);
+			}
+		}
+	}
+
+	lines.push("");
+	return lines.filter((l): l is string => l !== null).join("\n");
 }
 
 /**

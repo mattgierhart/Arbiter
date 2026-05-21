@@ -211,7 +211,7 @@ export default class ArbiterPlugin extends Plugin {
 
 			// Write to machine log if enabled
 			if (this.settings.enableMachineLog) {
-				await this.writeToMachineLog(record, file.path);
+				await this.writeToMachineLog(record, file.path, readiness);
 			}
 
 			// Show notice (suppressed in silent mode for batch assess-all)
@@ -307,7 +307,11 @@ export default class ArbiterPlugin extends Plugin {
 	/**
 	 * Write an assessment event to the machine log.
 	 */
-	async writeToMachineLog(record: ActionRecord, taskPath: string) {
+	async writeToMachineLog(
+		record: ActionRecord,
+		taskPath: string,
+		readiness?: import("./types").ReadinessResult,
+	) {
 		const logFolder = normalizePath(this.settings.logFolderPath);
 		const logPath = normalizePath(`${logFolder}/assessment-log.md`);
 
@@ -317,7 +321,7 @@ export default class ArbiterPlugin extends Plugin {
 			await this.app.vault.createFolder(logFolder);
 		}
 
-		const entry = formatLogEntry(record, taskPath);
+		const entry = formatLogEntry(record, taskPath, readiness);
 
 		const existing = this.app.vault.getAbstractFileByPath(logPath);
 		if (existing instanceof TFile) {

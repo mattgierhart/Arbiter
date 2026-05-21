@@ -3,6 +3,7 @@ import {
 	formatAssessmentBlock,
 	formatFrontmatterFields,
 	formatLaneAwareAssessmentBlock,
+	formatLogEntry,
 	setFrontmatterField,
 	updateTaskContent,
 	type LaneContext,
@@ -428,6 +429,29 @@ Do stuff with billing.
 
 			expect(updated).toContain("dispatch to claude-code");
 			expect(updated).toContain("**Dispatch envelope**: claude-code");
+		});
+
+		it("formatLogEntry includes structured dimension evidence when readiness is provided (acceptance #4)", () => {
+			const { record, lane } = buildLane("arbiter/next/T13.md", WELL_FORMED_CONTENT);
+			const entry = formatLogEntry(record, "arbiter/next/T13.md", lane.readiness);
+
+			// Header still has all the v0.5.0 fields
+			expect(entry).toContain("- **Action**: EXE");
+			expect(entry).toContain("- **Confidence**: high");
+
+			// New v0.6.0 evidence dump
+			expect(entry).toContain("- **Dimensions**:");
+			expect(entry).toContain("Clarity (ready):");
+			expect(entry).toContain("Authority (ready):");
+			expect(entry).toContain("[supports] frontmatter:frontmatter.title");
+		});
+
+		it("formatLogEntry keeps v0.5.0 format when readiness is omitted (back-compat)", () => {
+			const { record } = buildLane("arbiter/next/T14.md", WELL_FORMED_CONTENT);
+			const entry = formatLogEntry(record, "arbiter/next/T14.md");
+
+			expect(entry).toContain("- **Action**: EXE");
+			expect(entry).not.toContain("- **Dimensions**:");
 		});
 
 		it("falls back to legacy formatter when lane is omitted entirely", () => {
