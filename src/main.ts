@@ -191,11 +191,21 @@ export default class ArbiterPlugin extends Plugin {
 			// Select action
 			const record = selectAction(task, readiness, policies, confidenceConfig);
 
+			// v0.6.0: resolve workflow column for lane-aware templates.
+			const { resolveWorkflowColumn } = await import("./column-resolver");
+			const column = resolveWorkflowColumn(file.path);
+
 			// Update the task note
-			const updatedContent = updateTaskContent(content, record, {
-				frontmatterPrefix: this.settings.frontmatterPrefix,
-				assessmentHeading: this.settings.assessmentHeading,
-			});
+			const updatedContent = updateTaskContent(
+				content,
+				record,
+				{
+					frontmatterPrefix: this.settings.frontmatterPrefix,
+					assessmentHeading: this.settings.assessmentHeading,
+					laneAwareAssessments: this.settings.laneAwareAssessments,
+				},
+				{ task, readiness, column },
+			);
 
 			await this.app.vault.modify(file, updatedContent);
 
