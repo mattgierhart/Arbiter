@@ -4,7 +4,7 @@
 **Plugin**: Arbiter — Agent Action Orchestration (`obsidian-arbiter`)
 **Released**: v0.2.0 (last shipped 2026-05-03)
 **Repo**: [mattgierhart/Arbiter](https://github.com/mattgierhart/Arbiter) (public, MIT)
-**Last PRD update**: 2026-05-06
+**Last PRD update**: 2026-05-21
 **Owner**: Matt (single-author, personal usage)
 
 > **Scope shift from earlier cycles**: This is now a **personal-usage tool**, not a community plugin submission. KPIs around community installs / GitHub stars / external adopters from v0.3 are dropped. The acceptance bar is "Matt trusts it to run unattended in the autonomous loop." See §6.
@@ -365,6 +365,8 @@ Sort order: priority (urgent → high → normal → low) → urgency_date overd
 
 ### 12.6 v0.6.0 sketch (lightly held — revisit after v0.5.0 ships)
 
+> **Superseded 2026-05-21 by §13.** v0.6.0 has been re-scoped to the "Why" release (evidence pointers + lane-aware templates). Of the items below, project facet and status bar quick-toggle remain deferred; per-agent policies move to v0.7.0 alongside per-column gate floors; CTX-as-auto-dispatchable is reframed as a question v0.6.0's evidence visibility will answer rather than a parallel decision.
+
 - **Project facet** in kanban view (filter chips by `project_tag` or path-derived project name)
 - **OQ-004 per-agent policies** with the model decided
 - **CTX as auto-dispatchable** (or not) — informed by v0.5.0 dispatch log review
@@ -374,7 +376,191 @@ Past v0.6.0 is too speculative to scope.
 
 ---
 
-## 13. Session state — loop diagnosis (2026-05-06)
+## 13. v0.6.0 Roadmap — "Why" (planning, raised 2026-05-21)
+
+After v0.5.0 ("Clarity" — Up Next strip, approval flag, 3-state colors, quiet batch assess) restores trust at the kanban *surface*, v0.6.0 makes the underlying assessment legible: every readiness score cites its evidence, and the `## Agent Assessment` block reads in the dialect of the column the card is sitting in. Theme: **the eye trusts the 3 colors; the click reveals the receipts**.
+
+Inspiration: Routa's "lane specialists get stricter downstream" pattern — same engine, different output discipline per stage. Arbiter runs no LLM, so the engine output is unchanged; only the rendering shifts. This section supersedes the v0.6.0 sketch in §12.6.
+
+### 13.1 Premise — two trust gaps v0.5.0 won't close
+
+| Gap | Why v0.5.0 doesn't fix it |
+|---|---|
+| **"Trust the number" gap** — `clarity: 0.8` is opaque. Matt can't tell *why* it's 0.8 without re-reading the task and reconstructing the rubric. | v0.5.0 collapses 7 actions to 3 colors for scanning, but doesn't change what's inside the assessment block. The opacity persists at click-through. |
+| **"Same block for every column" gap** — a card in `proposed/` and a card in `in-progress/` get structurally identical assessments, even though they need different things from Matt (gap analysis vs. dispatch envelope vs. verification). | v0.5.0's Up Next strip surfaces *which* cards are next; it doesn't change what the assessment says when you open one. |
+
+### 13.2 In-scope
+
+| Component | Module(s) | Effort | Acceptance |
+|---|---|---|---|
+| **A. Evidence pointers per readiness dimension** | `readiness.ts`, `types.ts`, `action-recorder.ts` | Medium | Each dimension's score is accompanied by 1-3 evidence atoms: `{kind, ref, note?}`. Renders as a sublist under each dimension in the assessment block. |
+| **B. Lane-aware assessment templates** | `action-recorder.ts`, new `column-resolver.ts` | Medium | The `## Agent Assessment` block emits one of four templates based on the card's current column: `proposed`, `next`, `in-progress`, `done`. Engine produces the same `Readiness` + `Action` structs; the recorder picks the template. |
+| **C. Column detection helper** | new `column-resolver.ts` | Small | Given a task path, returns its current column from the configured kanban roots. Used by (B). Falls back to "no column" (renders generic template) if path doesn't resolve. |
+| **D. Generic-template fallback + opt-out** | `settings.ts` | Small | Setting `laneAwareAssessments: true \| false` (default `true`). When `false`, all cards get the v0.5.0-style template — preserves the simpler block as an escape hatch. |
+
+### 13.3 Out of scope (deferred to v0.7.0 or later)
+
+- **OQ-004 per-agent policies** — the natural home is a new policy file model, which is v0.7.0's "Promotion" release (per-column gate floors). Doing both at once risks a sprawling release.
+- **Project facet / filter chip strip in kanban view** — useful, but cosmetic relative to evidence-and-lanes. Defer.
+- **CTX as auto-dispatchable** — should be answered *by* v0.6.0's evidence visibility ("can I see the CTX gathering the right things?"), not in parallel with it. Revisit after v0.6.0 ships.
+- **Status bar quick-toggle** — same reasoning as §12.3. Cmd+P stays sufficient.
+
+### 13.4 Spec — evidence pointers per readiness dimension
+
+Each dimension currently returns `{score, blocking, reasons: string[]}`. The new shape:
+
+```ts
+type EvidenceAtom = {
+  kind: "frontmatter" | "body-section" | "link" | "policy" | "missing";
+  ref: string;                  // e.g. "frontmatter.acceptance_criteria"
+                                //      "body §Acceptance (lines 12-18)"
+                                //      "[[OTHER-TASK]]"
+                                //      "policy:dor-defaults.md"
+                                //      "missing: done definition"
+  note?: string;                // short freeform if needed
+};
+
+type DimensionResult = {
+  score: number;
+  blocking: boolean;
+  evidence: EvidenceAtom[];     // replaces `reasons: string[]`
+};
+```
+
+Rendering in the assessment block:
+
+```markdown
+### Clarity — 0.8
+- ✅ Title is specific (`frontmatter.title`)
+- ✅ Acceptance criteria present (`body §Acceptance, lines 12-18`)
+- ⚠️ No "done definition" found (`missing: done definition`)
+```
+
+Migration: `reasons: string[]` is removed from the engine output in this release. Historical assessments already written into vault notes are not re-rendered (per ARC-002 inline = current truth, machine log = append-only history). Machine log readers must accept both shapes during the transition window.
+
+No frontmatter schema change on task notes — evidence lives in the assessment block + machine log only.
+
+### 13.5 Spec — lane-aware assessment templates
+
+Four templates, selected by the card's current column.
+
+**Template: `proposed/` — "Gap analysis"**
+- Emphasis: *what's missing to make this ready*
+- Headline: `Refinement needed: <top 1-2 gaps>` or `Promotion-eligible — no gaps detected`
+- Dimension order: lowest-scoring blocking dimensions first
+- Suppressed: dispatch envelope, first-step recommendation
+- Footer: `When ready, move to next/` (or, if all v0.7.0 gates pass once shipped, `Promotion-eligible per gate policy`)
+
+Example:
+
+```markdown
+## Agent Assessment
+**Refinement needed: scope unbounded, no done definition**
+
+Action: `DEC` (decompose) · Confidence: 0.42
+
+### Scope — 0.3 ⛔
+- ⚠️ Body mentions "auth, billing, and reporting" (`body §Goals, lines 4-6`)
+- ⚠️ No subtask links (`missing: blocked_by or subtasks frontmatter`)
+- ✅ Owner identified (`frontmatter.owner`)
+
+### Clarity — 0.6
+- ✅ Title is specific (`frontmatter.title`)
+- ⚠️ No "done definition" found (`missing: done definition`)
+
+[... other dimensions ...]
+
+— When ready, move to `next/`
+```
+
+**Template: `next/` — "Dispatch envelope"**
+- Emphasis: *who runs this, where, with what*
+- Headline: action type + confidence + agent assignment
+- Dimension order: Authority + Feasibility first (the hard-blocks from OQ-005)
+- Includes: first-step recommendation, `agent_dispatch_hints` summary, blocked_by chain status
+- Footer: `Approved + dispatchable` (if `matt_approved: true`) or `Awaiting approval`
+
+Example:
+
+```markdown
+## Agent Assessment
+**EXE — dispatch to claude-code · Confidence: 0.87**
+
+### Authority — ready ✅
+- ✅ Owner is Matt (`frontmatter.owner`)
+- ✅ No external sign-off required (`policy:authority-defaults.md`)
+
+### Feasibility — ready ✅
+- ✅ Repo `arbiter/` reachable (`agent_dispatch_hints.workspace`)
+- ✅ All `blocked_by` resolved (`[[TASK-104]] status: done`)
+
+[... other dimensions ...]
+
+**First step**: Add `EvidenceAtom` type to `src/types.ts` (file exists at line ~120)
+**Dispatch envelope**: claude-code · branch `arbiter/v0.6.0/evidence`
+
+— Approved + dispatchable
+```
+
+**Template: `in-progress/` — "Verification"**
+- Emphasis: *what to check before marking done*
+- Headline: `In flight with <agent> since <timestamp>`
+- Dimension order: Feasibility evidence first (did the agent actually have what it needed?)
+- Includes: done-criteria checklist (derived from acceptance criteria if present), suggested verifier
+- Suppressed: re-recommending the first step
+- Footer: pointer to retro on completion
+
+**Template: `done/` — "Audit footprint"**
+- Emphasis: *what was decided and what fired*
+- Headline: terminal action + duration
+- Dimension order: as-of-dispatch snapshot, no re-scoring
+- Includes: dispatching agent, completion ack, link to retro session
+- Read-only — never overwritten by re-assessment (per ARC-002 + `AUDIT.md`)
+
+### 13.6 Integration with v0.5.0
+
+- **3-state colors stay on the card surface.** Green/Yellow/Red mapping from §12.3 unchanged.
+- **Evidence + lane template live inside the note**, revealed on click-through. No new visual density on the kanban board.
+- **Up Next strip is unchanged.** Eligibility logic from §12.4 unchanged (action ∈ {EXE}, approved, fresh, unblocked, no review gate).
+- **Approval flag is unchanged.** The `next/` template surfaces approval status more prominently in the headline footer, but doesn't add new approval semantics.
+- **3-color and lane-template are orthogonal.** A green card in `proposed/` still gets the gap-analysis template (it's promotion-eligible but hasn't been promoted). A yellow card in `next/` still gets the dispatch-envelope template (it explains *why* dispatch is blocked).
+
+### 13.7 Open questions raised by v0.6.0 scope
+
+Add to `open-questions.md` as OQ-016 / OQ-017 / OQ-018:
+
+- **OQ-016**: Source of truth for "current column" when a card has been hand-moved in `Kanban.md` but its file path hasn't moved (or vice versa). Recommendation: file path wins; SYNC-001 board debounce reconciles. Contested by Pinch's `proposed→next` move pattern — needs alignment.
+- **OQ-017**: Should evidence atoms be machine-comparable across assessments (so retro can ask "did Clarity evidence change between assessment N-1 and N?"), or human-readable freeform? Recommendation: structured `{kind, ref}` is comparable; `note` is freeform.
+- **OQ-018**: Lane templates assume the four-column model (`proposed/next/in-progress/done`). If a user adds intermediate columns (`review/`, `staging/`), do we generate a template, fall back to generic, or fail? Recommendation: generic fallback + warn once per session.
+
+### 13.8 Release plan
+
+- Single milestone, one git tag `0.6.0`, GitHub Release via existing workflow.
+- Code changes scoped to: `readiness.ts` (evidence shape), `types.ts` (new types), `action-recorder.ts` (template dispatch + rendering), new `column-resolver.ts`, `settings.ts` (opt-out flag), `__tests__/` (template snapshot tests per column, evidence rendering, opt-out, column detection edge cases).
+- Tests: ~10-15 new cases (4 template snapshots, evidence rendering for each dimension's success/blocking paths, opt-out fallback, column detection edge cases including OQ-016 path-vs-board conflict).
+- Backward compatibility: existing assessments in vault notes are not re-rendered; new assessments use new shape. Machine log readers must accept both `reasons: string[]` (historical) and `evidence: EvidenceAtom[]` (v0.6.0+).
+- No SYNC-001 contract change. No frontmatter schema change on task notes.
+
+### 13.9 Acceptance — when v0.6.0 is done
+
+1. Open any card in `proposed/`; the assessment block reads as gap analysis with evidence pointers on every dimension. Matt can answer "what's missing?" without re-reading the task body.
+2. Open any card in `next/`; the assessment block leads with dispatch envelope and surfaces approval state in the headline footer.
+3. Open any card in `in-progress/`; the assessment block reads as verification, not as re-evaluation.
+4. `/portfolio-retro` can read the machine log and answer "did Clarity evidence change between assessments?" for any card with ≥2 historical assessments.
+5. `laneAwareAssessments: false` falls back to v0.5.0 rendering with no visual regression.
+
+### 13.10 Risks specific to v0.6.0
+
+| Risk | Severity | Mitigation |
+|---|---|---|
+| Evidence pointers add noise instead of signal (Matt scans past them) | Medium | Cap at 3 evidence atoms per dimension; lowest-scoring dimension surfaces first; collapse passed dimensions to one-liner. |
+| Column detection misfires when file is mid-move (path transient) | Medium | OQ-016 resolution + generic-template fallback + opt-out (Component D). |
+| Lane templates make the block harder to scan, not easier (more structure ≠ more readable) | Medium | Snapshot tests pinned to expected length per template; if any template exceeds ~30 lines in the common case, redesign before release. |
+| Migration confusion — old machine log entries with `reasons: string[]` break retro tooling | Low | Retro reader accepts both shapes; documented in `AUDIT.md` update. |
+
+---
+
+## 14. Session state — loop diagnosis (2026-05-06)
 
 End-to-end dispatch loop verified at the infrastructure level. **Result: loop has never closed.** Detailed gaps:
 
@@ -403,7 +589,7 @@ The original recommendation order (#1 loop test → #2 BRAT → #3 P2 questions)
 
 ---
 
-## 14. References
+## 15. References
 
 | File | Role |
 |---|---|
