@@ -1,27 +1,55 @@
-import type { ParsedTask, ReadinessDimension, ReadinessResult, ReadinessState } from "./types";
+import type { EvidenceAtom, ParsedTask, ReadinessDimension, ReadinessResult, ReadinessState } from "./types";
 
 /**
  * Assess the Clarity dimension: Is the task unambiguous?
  */
 function assessClarity(task: ParsedTask): ReadinessDimension {
 	const issues: string[] = [];
+	const evidence: EvidenceAtom[] = [];
 
 	if (!task.title || task.title === "Untitled") {
 		issues.push("task has no title");
+		evidence.push({ kind: "missing", ref: "frontmatter.title", polarity: "blocks" });
+	} else {
+		evidence.push({ kind: "frontmatter", ref: "frontmatter.title", polarity: "supports" });
 	}
 
-	if (!task.sections.outcome && !task.sections.researchQuestion) {
+	const hasOutcome = !!task.sections.outcome;
+	const hasResearchQuestion = !!task.sections.researchQuestion;
+	if (!hasOutcome && !hasResearchQuestion) {
 		issues.push("no outcome or research question defined");
+		evidence.push({
+			kind: "missing",
+			ref: "missing: body §Outcome or §Research Question",
+			polarity: "blocks",
+		});
+	} else {
+		evidence.push({
+			kind: "body-section",
+			ref: hasOutcome ? "body §Outcome" : "body §Research Question",
+			polarity: "supports",
+		});
 	}
 
 	// Check if the outcome/research question is vague
 	const target = task.sections.outcome ?? task.sections.researchQuestion ?? "";
-	if (target.length < 10) {
+	if (target.length > 0 && target.length < 10) {
 		issues.push("outcome/research question is too brief to be actionable");
+		evidence.push({
+			kind: "body-section",
+			ref: hasOutcome ? "body §Outcome" : "body §Research Question",
+			note: `too brief (${target.length} chars)`,
+			polarity: "blocks",
+		});
 	}
 
 	if (issues.length === 0) {
-		return { dimension: "clarity", state: "ready", reason: "Task is clearly defined with outcome." };
+		return {
+			dimension: "clarity",
+			state: "ready",
+			reason: "Task is clearly defined with outcome.",
+			evidence,
+		};
 	}
 	if (issues.length === 1) {
 		return {
@@ -29,6 +57,7 @@ function assessClarity(task: ParsedTask): ReadinessDimension {
 			state: "partial",
 			reason: issues[0],
 			blockerType: "ambiguity",
+			evidence,
 		};
 	}
 	return {
@@ -36,6 +65,7 @@ function assessClarity(task: ParsedTask): ReadinessDimension {
 		state: "blocked",
 		reason: issues.join("; "),
 		blockerType: "ambiguity",
+		evidence,
 	};
 }
 
@@ -44,11 +74,20 @@ function assessClarity(task: ParsedTask): ReadinessDimension {
  */
 function assessContext(task: ParsedTask): ReadinessDimension {
 	const issues: string[] = [];
+	const evidence: EvidenceAtom[] = [];
 
 	// Check for unresolved wiki-links or references in the body
 	const unresolvedLinks = task.bodyContent.match(/\[\[.*?\]\]/g) ?? [];
 	// This is a heuristic — we can't actually check if vault files exist from pure text.
 	// In the plugin, we'd check via the Obsidian API. For now, we note them.
+	if (unresolvedLinks.length > 0) {
+		evidence.push({
+			kind: "link",
+			ref: "body wiki-links",
+			note: `${unresolvedLinks.length} referenced`,
+			polarity: "neutral",
+		});
+	}
 
 	// Check if preconditions exist but are unchecked
 	// Separate human-gated preconditions from self-servable ones
@@ -70,6 +109,30 @@ function assessContext(task: ParsedTask): ReadinessDimension {
 			issues.push(
 				`${unchecked.length} unchecked precondition(s): ${unchecked.map((p) => p.text).join(", ")}`
 			);
+			// Cap evidence atoms at 3 per dimension (PRD §13.10 noise risk).
+			for (const p of unchecked.slice(0, 3)) {
+				evidence.push({
+					kind: "body-section",
+					ref: "body §Preconditions",
+					note: p.text,
+					polarity: "blocks",
+				});
+			}
+			if (unchecked.length > 3) {
+				evidence.push({
+					kind: "body-section",
+					ref: "body §Preconditions",
+					note: `+${unchecked.length - 3} more unchecked`,
+					polarity: "blocks",
+				});
+			}
+		} else if (task.sections.preconditions.length > 0) {
+			evidence.push({
+				kind: "body-section",
+				ref: "body §Preconditions",
+				note: "all checked",
+				polarity: "supports",
+			});
 		}
 	}
 
@@ -77,16 +140,33 @@ function assessContext(task: ParsedTask): ReadinessDimension {
 	if (task.type === "task-research") {
 		if (!task.sections.scope) {
 			issues.push("research task missing scope definition");
+			evidence.push({
+				kind: "missing",
+				ref: "missing: body §Scope",
+				note: "required for task-research",
+				polarity: "blocks",
+			});
 		}
 	}
 
 	if (issues.length === 0) {
+		// Ensure every ready dimension still has at least one atom showing
+		// what was checked — "show your work" is the whole point of evidence.
+		if (evidence.length === 0) {
+			evidence.push({
+				kind: "policy",
+				ref: "policy:context-defaults",
+				note: "no missing-context indicators",
+				polarity: "supports",
+			});
+		}
 		return {
 			dimension: "context",
 			state: "ready",
 			reason: unresolvedLinks.length > 0
 				? `Context appears available (${unresolvedLinks.length} linked notes referenced).`
 				: "No missing context indicators found.",
+			evidence,
 		};
 	}
 
@@ -107,6 +187,7 @@ function assessContext(task: ParsedTask): ReadinessDimension {
 		state: isBlocked ? "blocked" : "partial",
 		reason: issues.join("; "),
 		blockerType,
+		evidence,
 	};
 }
 
@@ -120,6 +201,7 @@ function assessScope(task: ParsedTask): ReadinessDimension {
 
 	// If there are many unchecked execution steps, scope may be too broad
 	const uncheckedSteps = steps.filter((s) => !s.checked).length;
+	const uncheckedDone = doneCriteria.filter((d) => !d.checked).length;
 
 	if (uncheckedSteps > 7) {
 		return {
@@ -127,6 +209,14 @@ function assessScope(task: ParsedTask): ReadinessDimension {
 			state: "blocked",
 			reason: `${uncheckedSteps} remaining execution steps — task may need decomposition.`,
 			blockerType: "scope",
+			evidence: [
+				{
+					kind: "body-section",
+					ref: "body §Execution Steps",
+					note: `${uncheckedSteps} unchecked (>7 → decompose)`,
+					polarity: "blocks",
+				},
+			],
 		};
 	}
 
@@ -136,24 +226,65 @@ function assessScope(task: ParsedTask): ReadinessDimension {
 			state: "partial",
 			reason: `${uncheckedSteps} remaining execution steps — consider breaking into subtasks.`,
 			blockerType: "scope",
+			evidence: [
+				{
+					kind: "body-section",
+					ref: "body §Execution Steps",
+					note: `${uncheckedSteps} unchecked (>4 → consider DEC)`,
+					polarity: "blocks",
+				},
+			],
 		};
 	}
 
 	// Check done criteria complexity
-	const uncheckedDone = doneCriteria.filter((d) => !d.checked).length;
 	if (uncheckedDone > 5) {
 		return {
 			dimension: "scope",
 			state: "partial",
 			reason: `${uncheckedDone} unchecked done criteria — task may be broad.`,
 			blockerType: "scope",
+			evidence: [
+				{
+					kind: "body-section",
+					ref: "body §Done Criteria",
+					note: `${uncheckedDone} unchecked (>5)`,
+					polarity: "blocks",
+				},
+			],
 		};
 	}
 
+	const evidence: EvidenceAtom[] = [];
+	if (steps.length > 0) {
+		evidence.push({
+			kind: "body-section",
+			ref: "body §Execution Steps",
+			note: `${uncheckedSteps}/${steps.length} unchecked`,
+			polarity: "supports",
+		});
+	}
+	if (doneCriteria.length > 0) {
+		evidence.push({
+			kind: "body-section",
+			ref: "body §Done Criteria",
+			note: `${uncheckedDone}/${doneCriteria.length} unchecked`,
+			polarity: "supports",
+		});
+	}
+	if (evidence.length === 0) {
+		evidence.push({
+			kind: "policy",
+			ref: "policy:scope-defaults",
+			note: "no decomposition triggers",
+			polarity: "supports",
+		});
+	}
 	return {
 		dimension: "scope",
 		state: "ready",
 		reason: "Task scope is appropriate for execution.",
+		evidence,
 	};
 }
 
@@ -176,6 +307,14 @@ function assessAuthority(task: ParsedTask): ReadinessDimension {
 				state: "blocked",
 				reason: "Task requires Matt's review (needs_matt_review: true) — no approval evidence found.",
 				blockerType: "access",
+				evidence: [
+					{
+						kind: "frontmatter",
+						ref: "frontmatter.needs_matt_review",
+						note: "true; no approval markers in body",
+						polarity: "blocks",
+					},
+				],
 			};
 		}
 	}
@@ -205,13 +344,39 @@ function assessAuthority(task: ParsedTask): ReadinessDimension {
 			state: "partial",
 			reason: `Task involves potentially sensitive operations: ${foundRisks.join(", ")}. Consider escalation.`,
 			blockerType: "risk",
+			evidence: [
+				{
+					kind: "body-section",
+					ref: "body §Execution Steps (or title)",
+					note: `risk keywords: ${foundRisks.join(", ")}`,
+					polarity: "blocks",
+				},
+			],
 		};
 	}
 
+	const evidence: EvidenceAtom[] = task.needsMattReview
+		? [
+				{
+					kind: "frontmatter",
+					ref: "frontmatter.needs_matt_review",
+					note: "approval markers found in body",
+					polarity: "supports",
+				},
+		  ]
+		: [
+				{
+					kind: "policy",
+					ref: "policy:authority-defaults",
+					note: "no human-gate requested",
+					polarity: "supports",
+				},
+		  ];
 	return {
 		dimension: "authority",
 		state: "ready",
 		reason: "No authority constraints detected.",
+		evidence,
 	};
 }
 
@@ -220,6 +385,7 @@ function assessAuthority(task: ParsedTask): ReadinessDimension {
  */
 function assessDependencies(task: ParsedTask): ReadinessDimension {
 	const issues: string[] = [];
+	const evidence: EvidenceAtom[] = [];
 
 	// Check for temporal constraints
 	// NOTE: A PAST urgency_date means overdue, not "wait." Overdue tasks need
@@ -238,6 +404,12 @@ function assessDependencies(task: ParsedTask): ReadinessDimension {
 				bodyLower.includes("defer until")
 			) {
 				issues.push(`task deferred until ${task.urgencyDate}`);
+				evidence.push({
+					kind: "frontmatter",
+					ref: "frontmatter.urgency_date",
+					note: `future + 'wait until' language in body`,
+					polarity: "blocks",
+				});
 			}
 		}
 		// Past dates are NOT a dependency — they indicate urgency, handled elsewhere
@@ -252,7 +424,6 @@ function assessDependencies(task: ParsedTask): ReadinessDimension {
 		"once",
 		"when",
 	];
-	const bodyLower = task.bodyContent.toLowerCase();
 	for (const indicator of waitIndicators) {
 		// Look for these in context that suggests actual blocking
 		const pattern = new RegExp(`(?:^|\\n)[-*]\\s.*${indicator}\\s`, "i");
@@ -264,6 +435,12 @@ function assessDependencies(task: ParsedTask): ReadinessDimension {
 			);
 			if (blockingPrecondition) {
 				issues.push(`unchecked dependency: "${blockingPrecondition.text}"`);
+				evidence.push({
+					kind: "body-section",
+					ref: "body §Preconditions",
+					note: blockingPrecondition.text,
+					polarity: "blocks",
+				});
 			}
 		}
 	}
@@ -271,14 +448,40 @@ function assessDependencies(task: ParsedTask): ReadinessDimension {
 	// Check for existing arbiter wait condition
 	if (task.arbiterAction === "WAIT" && task.arbiterWakeCondition) {
 		issues.push(`previously waiting: ${task.arbiterWakeCondition}`);
+		evidence.push({
+			kind: "frontmatter",
+			ref: "frontmatter.arbiter_wake_condition",
+			note: task.arbiterWakeCondition,
+			polarity: "blocks",
+		});
 	}
 
 	if (issues.length === 0) {
+		if (evidence.length === 0) {
+			evidence.push({
+				kind: "policy",
+				ref: "policy:dependency-defaults",
+				note: "no blocking dependencies",
+				polarity: "supports",
+			});
+		}
 		return {
 			dimension: "dependencies",
 			state: "ready",
 			reason: "No blocking dependencies detected.",
+			evidence,
 		};
+	}
+
+	// Cap atoms at 3 for noise control (PRD §13.10).
+	const cappedEvidence = evidence.slice(0, 3);
+	if (evidence.length > 3) {
+		cappedEvidence.push({
+			kind: "body-section",
+			ref: "body §Preconditions",
+			note: `+${evidence.length - 3} more dependency indicators`,
+			polarity: "blocks",
+		});
 	}
 
 	return {
@@ -286,6 +489,7 @@ function assessDependencies(task: ParsedTask): ReadinessDimension {
 		state: issues.length > 1 ? "blocked" : "partial",
 		reason: issues.join("; "),
 		blockerType: "dependency",
+		evidence: cappedEvidence,
 	};
 }
 
@@ -302,6 +506,14 @@ function assessFeasibility(task: ParsedTask): ReadinessDimension {
 			state: "blocked",
 			reason: "Task is cancelled.",
 			blockerType: "policy",
+			evidence: [
+				{
+					kind: "frontmatter",
+					ref: "frontmatter.status",
+					note: "cancelled (terminal)",
+					polarity: "blocks",
+				},
+			],
 		};
 	}
 	if (normalizedStatus === "completed" || normalizedStatus === "done" || normalizedStatus === "resolved") {
@@ -310,22 +522,37 @@ function assessFeasibility(task: ParsedTask): ReadinessDimension {
 			state: "blocked",
 			reason: `Task is marked '${normalizedStatus}'.`,
 			blockerType: "policy",
+			evidence: [
+				{
+					kind: "frontmatter",
+					ref: "frontmatter.status",
+					note: `${normalizedStatus} (terminal)`,
+					polarity: "blocks",
+				},
+			],
 		};
 	}
 
 	// Check for risk/slip triggers that indicate infeasibility
 	if (task.sections.risks) {
 		const risksLower = task.sections.risks.toLowerCase();
-		if (
-			risksLower.includes("infeasible") ||
-			risksLower.includes("impossible") ||
-			risksLower.includes("cannot be done")
-		) {
+		const matches = ["infeasible", "impossible", "cannot be done"].filter((kw) =>
+			risksLower.includes(kw),
+		);
+		if (matches.length > 0) {
 			return {
 				dimension: "feasibility",
 				state: "blocked",
 				reason: "Task risks section indicates infeasibility.",
 				blockerType: "capability",
+				evidence: [
+					{
+						kind: "body-section",
+						ref: "body §Risks",
+						note: `matched: ${matches.join(", ")}`,
+						polarity: "blocks",
+					},
+				],
 			};
 		}
 	}
@@ -334,6 +561,14 @@ function assessFeasibility(task: ParsedTask): ReadinessDimension {
 		dimension: "feasibility",
 		state: "ready",
 		reason: "Task appears feasible.",
+		evidence: [
+			{
+				kind: "frontmatter",
+				ref: "frontmatter.status",
+				note: normalizedStatus || "active",
+				polarity: "supports",
+			},
+		],
 	};
 }
 

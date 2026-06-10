@@ -115,6 +115,20 @@ export class ArbiterSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Lane-aware assessments (v0.6.0)")
+			.setDesc(
+				"Render column-specific assessment templates (gap analysis in proposed/, dispatch envelope in next/, verification in in-progress/, audit footprint in done/). Turn off to use the legacy single-template render."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.laneAwareAssessments)
+					.onChange(async (value) => {
+						this.plugin.settings.laneAwareAssessments = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
 			.setName("Confidence threshold")
 			.setDesc(
 				"Minimum confidence (0.0–1.0) for EXE recommendations. Below this, suggest a non-EXE action."

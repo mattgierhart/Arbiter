@@ -2,9 +2,15 @@ import { describe, it, expect } from "vitest";
 import {
 	formatAssessmentBlock,
 	formatFrontmatterFields,
+	formatLaneAwareAssessmentBlock,
+	formatLogEntry,
 	setFrontmatterField,
 	updateTaskContent,
+	type LaneContext,
 } from "../action-recorder";
+import { parseTask } from "../task-parser";
+import { assessReadiness } from "../readiness";
+import { resolveWorkflowColumn } from "../column-resolver";
 import type { ActionRecord } from "../types";
 
 const SAMPLE_RECORD: ActionRecord = {
@@ -98,6 +104,7 @@ describe("updateTaskContent", () => {
 	const settings = {
 		frontmatterPrefix: "arbiter_",
 		assessmentHeading: "## Agent Assessment",
+		laneAwareAssessments: true,
 	};
 
 	it("adds assessment to a note without one", () => {
@@ -217,5 +224,248 @@ body`;
 
 		const c = setFrontmatterField("---\nx: 1\n---\nbody", "k", "has spaces");
 		expect(c).toContain('k: "has spaces"');
+	});
+});
+
+describe("formatLaneAwareAssessmentBlock (v0.6.0)", () => {
+	const WELL_FORMED_CONTENT = `---
+title: "Build evidence renderer"
+type: task-execution
+status: active
+owner: claude-code
+---
+
+## Outcome
+Render evidence atoms with icons under each readiness dimension.
+
+## Preconditions
+- [x] EvidenceAtom type defined
+
+## Execution Steps
+- [ ] Write renderDimensionBlock
+- [ ] Add tests
+
+## Done Criteria
+- [ ] All templates pass snapshot tests
+- [ ] No regressions in 121-test baseline
+`;
+
+	const VAGUE_CONTENT = `---
+title: "Vague proposal"
+type: task-execution
+status: active
+owner: pinch
+---
+
+Do stuff with billing.
+`;
+
+	function buildLane(filePath: string, content: string): { record: ActionRecord; lane: LaneContext } {
+		const task = parseTask(content, filePath);
+		const readiness = assessReadiness(task);
+		const record: ActionRecord = {
+			action: readiness.allReady ? "EXE" : "DEC",
+			confidence: readiness.allReady ? "high" : "low",
+			reason: readiness.allReady ? "Ready" : "Gaps detected",
+			nextAction: "Refine the outcome section",
+			blockerType: readiness.allReady ? "none" : "ambiguity",
+			needsHuman: !readiness.allReady,
+			lastAssessed: "2026-05-21T14:00:00.000Z",
+		};
+		const column = resolveWorkflowColumn(filePath);
+		return { record, lane: { task, readiness, column } };
+	}
+
+	describe("proposed/ — Gap analysis template", () => {
+		it("headlines 'Refinement needed' when gaps exist", () => {
+			const { record, lane } = buildLane("arbiter/proposed/T1.md", VAGUE_CONTENT);
+			const block = formatLaneAwareAssessmentBlock(record, lane);
+
+			expect(block).toContain("## Agent Assessment");
+			expect(block.toLowerCase()).toContain("refinement needed");
+			expect(block).toContain("`next/`"); // footer guides to next/
+		});
+
+		it("headlines 'Promotion-eligible' when no gaps", () => {
+			const { record, lane } = buildLane("arbiter/proposed/T2.md", WELL_FORMED_CONTENT);
+			const block = formatLaneAwareAssessmentBlock(record, lane);
+
+			expect(block).toContain("Promotion-eligible");
+		});
+
+		it("renders evidence atoms with polarity icons under each dimension", () => {
+			const { record, lane } = buildLane("arbiter/proposed/T3.md", VAGUE_CONTENT);
+			const block = formatLaneAwareAssessmentBlock(record, lane);
+
+			expect(block).toContain("**Clarity**");
+			expect(block).toMatch(/⚠️.*frontmatter|⚠️.*missing|⚠️.*body/);
+		});
+	});
+
+	describe("next/ — Dispatch envelope template", () => {
+		it("headlines with dispatch envelope when action is EXE", () => {
+			const { record, lane } = buildLane("arbiter/next/T4.md", WELL_FORMED_CONTENT);
+			const block = formatLaneAwareAssessmentBlock(record, lane);
+
+			expect(block).toContain("## Agent Assessment");
+			expect(block).toContain("EXE");
+			expect(block).toContain("dispatch to claude-code");
+			expect(block).toContain("**Next step**");
+			expect(block).toContain("**Dispatch envelope**: claude-code");
+		});
+
+		it("orders Authority + Feasibility first in the dimension list", () => {
+			const { record, lane } = buildLane("arbiter/next/T5.md", WELL_FORMED_CONTENT);
+			const block = formatLaneAwareAssessmentBlock(record, lane);
+
+			const authorityIdx = block.indexOf("**Authority**");
+			const feasibilityIdx = block.indexOf("**Feasibility**");
+			const clarityIdx = block.indexOf("**Clarity**");
+
+			expect(authorityIdx).toBeGreaterThan(-1);
+			expect(feasibilityIdx).toBeGreaterThan(-1);
+			expect(clarityIdx).toBeGreaterThan(-1);
+			expect(authorityIdx).toBeLessThan(clarityIdx);
+			expect(feasibilityIdx).toBeLessThan(clarityIdx);
+		});
+
+		it("surfaces approval state in the footer", () => {
+			const { record, lane } = buildLane("arbiter/next/T6.md", WELL_FORMED_CONTENT);
+			lane.task.mattApproved = true;
+			const approved = formatLaneAwareAssessmentBlock(record, lane);
+			expect(approved).toContain("Approved + dispatchable");
+
+			lane.task.mattApproved = false;
+			const awaiting = formatLaneAwareAssessmentBlock(record, lane);
+			expect(awaiting).toContain("Awaiting approval");
+		});
+	});
+
+	describe("in-progress/ — Verification template", () => {
+		it("headlines 'In flight' and lists done criteria as checkboxes", () => {
+			const { record, lane } = buildLane("arbiter/in-progress/T7.md", WELL_FORMED_CONTENT);
+			const block = formatLaneAwareAssessmentBlock(record, lane);
+
+			expect(block).toContain("In flight with claude-code");
+			expect(block).toContain("Done criteria — verify before marking done");
+			expect(block).toContain("- [ ] All templates pass snapshot tests");
+			expect(block).toContain("Verify done criteria before moving to `done/`");
+		});
+
+		it("orders Feasibility first", () => {
+			const { record, lane } = buildLane("arbiter/in-progress/T8.md", WELL_FORMED_CONTENT);
+			const block = formatLaneAwareAssessmentBlock(record, lane);
+
+			const feasibilityIdx = block.indexOf("**Feasibility**");
+			const clarityIdx = block.indexOf("**Clarity**");
+			expect(feasibilityIdx).toBeGreaterThan(-1);
+			expect(feasibilityIdx).toBeLessThan(clarityIdx);
+		});
+	});
+
+	describe("done/ — Audit footprint template", () => {
+		it("renders read-only audit framing with as-of-dispatch snapshot", () => {
+			const { record, lane } = buildLane("arbiter/done/T9.md", WELL_FORMED_CONTENT);
+			const block = formatLaneAwareAssessmentBlock(record, lane);
+
+			expect(block).toContain("recorded");
+			expect(block).toContain("**Dispatched by**: claude-code");
+			expect(block).toContain("As-of-dispatch snapshot");
+			expect(block).toContain("Read-only audit footprint");
+		});
+	});
+
+	describe("opt-out + unknown column behavior", () => {
+		it("updateTaskContent uses legacy template when laneAwareAssessments is false", () => {
+			const { record, lane } = buildLane("arbiter/next/T10.md", WELL_FORMED_CONTENT);
+			const updated = updateTaskContent(
+				WELL_FORMED_CONTENT,
+				record,
+				{
+					frontmatterPrefix: "arbiter_",
+					assessmentHeading: "## Agent Assessment",
+					laneAwareAssessments: false,
+				},
+				lane,
+			);
+
+			// Legacy block has "- **Action**: EXE (Execute)" line; lane-aware uses
+			// a bold headline above it instead.
+			expect(updated).toContain("- **Action**: EXE (Execute)");
+			expect(updated).not.toContain("dispatch to claude-code");
+		});
+
+		it("updateTaskContent uses legacy template when column is unknown", () => {
+			const { record, lane } = buildLane("backlog/tasks/T11.md", WELL_FORMED_CONTENT);
+			expect(lane.column).toBe("unknown");
+
+			const updated = updateTaskContent(
+				WELL_FORMED_CONTENT,
+				record,
+				{
+					frontmatterPrefix: "arbiter_",
+					assessmentHeading: "## Agent Assessment",
+					laneAwareAssessments: true,
+				},
+				lane,
+			);
+
+			expect(updated).toContain("- **Action**: EXE (Execute)");
+			expect(updated).not.toContain("dispatch to claude-code");
+		});
+
+		it("updateTaskContent uses lane-aware template when laneAwareAssessments=true and column is known", () => {
+			const { record, lane } = buildLane("arbiter/next/T12.md", WELL_FORMED_CONTENT);
+			const updated = updateTaskContent(
+				WELL_FORMED_CONTENT,
+				record,
+				{
+					frontmatterPrefix: "arbiter_",
+					assessmentHeading: "## Agent Assessment",
+					laneAwareAssessments: true,
+				},
+				lane,
+			);
+
+			expect(updated).toContain("dispatch to claude-code");
+			expect(updated).toContain("**Dispatch envelope**: claude-code");
+		});
+
+		it("formatLogEntry includes structured dimension evidence when readiness is provided (acceptance #4)", () => {
+			const { record, lane } = buildLane("arbiter/next/T13.md", WELL_FORMED_CONTENT);
+			const entry = formatLogEntry(record, "arbiter/next/T13.md", lane.readiness);
+
+			// Header still has all the v0.5.0 fields
+			expect(entry).toContain("- **Action**: EXE");
+			expect(entry).toContain("- **Confidence**: high");
+
+			// New v0.6.0 evidence dump
+			expect(entry).toContain("- **Dimensions**:");
+			expect(entry).toContain("Clarity (ready):");
+			expect(entry).toContain("Authority (ready):");
+			expect(entry).toContain("[supports] frontmatter:frontmatter.title");
+		});
+
+		it("formatLogEntry keeps v0.5.0 format when readiness is omitted (back-compat)", () => {
+			const { record } = buildLane("arbiter/next/T14.md", WELL_FORMED_CONTENT);
+			const entry = formatLogEntry(record, "arbiter/next/T14.md");
+
+			expect(entry).toContain("- **Action**: EXE");
+			expect(entry).not.toContain("- **Dimensions**:");
+		});
+
+		it("falls back to legacy formatter when lane is omitted entirely", () => {
+			const updated = updateTaskContent(
+				WELL_FORMED_CONTENT,
+				SAMPLE_RECORD,
+				{
+					frontmatterPrefix: "arbiter_",
+					assessmentHeading: "## Agent Assessment",
+					laneAwareAssessments: true,
+				},
+			);
+
+			expect(updated).toContain("- **Action**: EXE (Execute)");
+		});
 	});
 });

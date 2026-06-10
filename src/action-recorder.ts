@@ -1,5 +1,23 @@
-import type { ActionRecord, ArbiterSettings } from "./types";
+import type {
+	ActionRecord,
+	ArbiterSettings,
+	EvidenceAtom,
+	ParsedTask,
+	ReadinessDimension,
+	ReadinessResult,
+	WorkflowColumn,
+} from "./types";
 import { ACTION_LABELS } from "./types";
+
+/**
+ * v0.6.0: bundle of context the recorder needs to render a lane-aware
+ * assessment block. When omitted, the legacy single-template render is used.
+ */
+export interface LaneContext {
+	task: ParsedTask;
+	readiness: ReadinessResult;
+	column: WorkflowColumn;
+}
 
 /**
  * Format an ActionRecord as a markdown assessment block.
@@ -80,11 +98,17 @@ export function formatFrontmatterFields(
  * Update a task note's content with the new assessment.
  * - Updates or adds arbiter_ frontmatter fields
  * - Replaces or appends the ## Agent Assessment section
+ *
+ * v0.6.0: when `lane` is provided AND `settings.laneAwareAssessments` is true
+ * AND `lane.column !== "unknown"`, the assessment block uses a column-keyed
+ * template (gap analysis / dispatch envelope / verification / audit). Otherwise
+ * the legacy single-template render is used (back-compat).
  */
 export function updateTaskContent(
 	content: string,
 	record: ActionRecord,
-	settings: Pick<ArbiterSettings, "frontmatterPrefix" | "assessmentHeading">
+	settings: Pick<ArbiterSettings, "frontmatterPrefix" | "assessmentHeading" | "laneAwareAssessments">,
+	lane?: LaneContext,
 ): string {
 	let result = content;
 
@@ -92,7 +116,12 @@ export function updateTaskContent(
 	result = updateFrontmatter(result, record, settings.frontmatterPrefix);
 
 	// Step 2: Update or append assessment section
-	result = updateAssessmentSection(result, record, settings.assessmentHeading);
+	const useLaneAware =
+		settings.laneAwareAssessments && lane !== undefined && lane.column !== "unknown";
+	const block = useLaneAware
+		? formatLaneAwareAssessmentBlock(record, lane!)
+		: formatAssessmentBlock(record);
+	result = replaceOrAppendAssessmentSection(result, block, settings.assessmentHeading);
 
 	return result;
 }
@@ -139,20 +168,19 @@ function updateFrontmatter(
 }
 
 /**
- * Replace existing ## Agent Assessment section or append one.
+ * Replace existing ## Agent Assessment section or append a new one.
  */
-function updateAssessmentSection(
+function replaceOrAppendAssessmentSection(
 	content: string,
-	record: ActionRecord,
-	heading: string
+	assessmentBlock: string,
+	heading: string,
 ): string {
-	const assessmentBlock = formatAssessmentBlock(record);
 	const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 	// Try to find and replace existing assessment section
 	const sectionPattern = new RegExp(
 		`${escapedHeading}\\s*\\n[\\s\\S]*?(?=\\n## |$)`,
-		"i"
+		"i",
 	);
 
 	if (sectionPattern.test(content)) {
@@ -219,12 +247,19 @@ function formatFrontmatterValue(value: string | boolean | null): string {
 
 /**
  * Format a machine log entry for the optional append-only event log.
+ *
+ * v0.6.0: when `readiness` is provided, the log entry includes a structured
+ * dimension-by-dimension evidence dump. This is what `/portfolio-retro`
+ * reads to answer "did Clarity evidence change between assessment N-1
+ * and N?" (PRD §13.9 acceptance #4). When omitted, the entry uses the
+ * v0.5.0 format — back-compat preserved.
  */
 export function formatLogEntry(
 	record: ActionRecord,
-	taskPath: string
+	taskPath: string,
+	readiness?: ReadinessResult,
 ): string {
-	return [
+	const lines: (string | null)[] = [
 		`## ${formatTimestamp(record.lastAssessed)}`,
 		`- **Task**: ${taskPath}`,
 		`- **Action**: ${record.action}`,
@@ -233,10 +268,249 @@ export function formatLogEntry(
 		`- **Next**: ${record.nextAction}`,
 		record.humanAsk ? `- **Ask**: ${record.humanAsk}` : null,
 		record.wakeCondition ? `- **Wake**: ${record.wakeCondition}` : null,
+	];
+
+	if (readiness) {
+		lines.push("- **Dimensions**:");
+		for (const dim of readiness.dimensions) {
+			lines.push(`  - ${DIMENSION_LABEL[dim.dimension]} (${dim.state}):`);
+			if (dim.evidence && dim.evidence.length > 0) {
+				for (const atom of dim.evidence) {
+					const note = atom.note ? ` — ${atom.note}` : "";
+					lines.push(`    - [${atom.polarity}] ${atom.kind}:${atom.ref}${note}`);
+				}
+			} else {
+				lines.push(`    - [reason] ${dim.reason}`);
+			}
+		}
+	}
+
+	lines.push("");
+	return lines.filter((l): l is string => l !== null).join("\n");
+}
+
+/**
+ * v0.6.0: render an assessment block in the dialect of the workflow column
+ * the card currently sits in. Same engine output, different framing per stage.
+ *
+ *   proposed/    → "Gap analysis" — what's missing to make this ready?
+ *   next/        → "Dispatch envelope" — who runs this, where, with what?
+ *   in-progress/ → "Verification" — what to check before marking done?
+ *   done/        → "Audit footprint" — what was decided and what fired?
+ *
+ * See PRD §13.5 for the full per-template spec.
+ */
+export function formatLaneAwareAssessmentBlock(
+	record: ActionRecord,
+	lane: LaneContext,
+): string {
+	switch (lane.column) {
+		case "proposed":
+			return renderProposedTemplate(record, lane);
+		case "next":
+			return renderNextTemplate(record, lane);
+		case "in-progress":
+			return renderInProgressTemplate(record, lane);
+		case "done":
+			return renderDoneTemplate(record, lane);
+		case "unknown":
+		default:
+			// Caller should have routed to the legacy formatter, but be safe.
+			return formatAssessmentBlock(record);
+	}
+}
+
+const DIMENSION_LABEL: Record<ReadinessDimension["dimension"], string> = {
+	clarity: "Clarity",
+	context: "Context",
+	scope: "Scope",
+	authority: "Authority",
+	dependencies: "Dependencies",
+	feasibility: "Feasibility",
+};
+
+function polarityIcon(polarity: EvidenceAtom["polarity"]): string {
+	switch (polarity) {
+		case "supports":
+			return "✅";
+		case "blocks":
+			return "⚠️";
+		case "neutral":
+			return "ℹ️";
+	}
+}
+
+function renderEvidenceLine(atom: EvidenceAtom): string {
+	const icon = polarityIcon(atom.polarity);
+	const note = atom.note ? ` — ${atom.note}` : "";
+	return `  - ${icon} \`${atom.ref}\`${note}`;
+}
+
+function renderDimensionBlock(dim: ReadinessDimension): string[] {
+	const lines: string[] = [`- **${DIMENSION_LABEL[dim.dimension]}** — ${dim.state}`];
+	if (dim.evidence && dim.evidence.length > 0) {
+		for (const atom of dim.evidence) {
+			lines.push(renderEvidenceLine(atom));
+		}
+	} else {
+		// Back-compat fallback when an assessor didn't populate evidence.
+		lines.push(`  - ${dim.reason}`);
+	}
+	return lines;
+}
+
+/**
+ * Sort dimensions so the most-relevant-to-this-template appear first.
+ */
+function orderForProposed(dims: ReadinessDimension[]): ReadinessDimension[] {
+	// Lowest-scoring blocking dimensions first; everything else after.
+	const order = (state: ReadinessDimension["state"]) =>
+		state === "blocked" ? 0 : state === "partial" ? 1 : 2;
+	return [...dims].sort((a, b) => order(a.state) - order(b.state));
+}
+
+function orderForNext(dims: ReadinessDimension[]): ReadinessDimension[] {
+	// Authority + Feasibility first (the hard-blocks from OQ-005), then rest in
+	// original order.
+	const HARD = new Set(["authority", "feasibility"]);
+	const hard = dims.filter((d) => HARD.has(d.dimension));
+	const soft = dims.filter((d) => !HARD.has(d.dimension));
+	return [...hard, ...soft];
+}
+
+function orderForInProgress(dims: ReadinessDimension[]): ReadinessDimension[] {
+	// Feasibility first — did the agent actually have what it needed?
+	const feasibility = dims.filter((d) => d.dimension === "feasibility");
+	const rest = dims.filter((d) => d.dimension !== "feasibility");
+	return [...feasibility, ...rest];
+}
+
+function renderProposedTemplate(record: ActionRecord, lane: LaneContext): string {
+	const blocked = lane.readiness.blockedDimensions;
+	const partial = lane.readiness.partialDimensions;
+	const gaps = [...blocked, ...partial].slice(0, 2).map((d) => DIMENSION_LABEL[d.dimension]);
+
+	const headline =
+		gaps.length === 0
+			? "**Promotion-eligible — no gaps detected**"
+			: `**Refinement needed: ${gaps.join(", ").toLowerCase()}**`;
+
+	const lines: string[] = [
+		"## Agent Assessment",
+		headline,
 		"",
-	]
-		.filter(Boolean)
-		.join("\n");
+		`- **Action**: ${record.action} (${ACTION_LABELS[record.action]})`,
+		`- **Confidence**: ${record.confidence}`,
+	];
+
+	for (const dim of orderForProposed(lane.readiness.dimensions)) {
+		lines.push(...renderDimensionBlock(dim));
+	}
+
+	lines.push("");
+	lines.push(
+		gaps.length === 0
+			? "_Move to `next/` to dispatch._"
+			: "_Address the gaps above, then move to `next/`._",
+	);
+	lines.push(`_Last assessed: ${formatTimestamp(record.lastAssessed)}._`);
+
+	return lines.join("\n");
+}
+
+function renderNextTemplate(record: ActionRecord, lane: LaneContext): string {
+	const approved = lane.task.mattApproved === true;
+	const headline =
+		record.action === "EXE"
+			? `**EXE — dispatch to ${lane.task.owner} · Confidence: ${record.confidence}**`
+			: `**${record.action} (${ACTION_LABELS[record.action]}) · Confidence: ${record.confidence}**`;
+
+	const lines: string[] = ["## Agent Assessment", headline, ""];
+
+	for (const dim of orderForNext(lane.readiness.dimensions)) {
+		lines.push(...renderDimensionBlock(dim));
+	}
+
+	lines.push("");
+	lines.push(`- **Next step**: ${record.nextAction}`);
+	lines.push(`- **Dispatch envelope**: ${lane.task.owner}`);
+	if (record.humanAsk) {
+		lines.push(`- **Human ask**: ${record.humanAsk}`);
+	}
+	if (record.wakeCondition) {
+		lines.push(`- **Wake condition**: ${record.wakeCondition}`);
+	}
+
+	lines.push("");
+	lines.push(
+		approved
+			? "_Approved + dispatchable._"
+			: "_Awaiting approval (set `matt_approved: true` to dispatch)._",
+	);
+	lines.push(`_Last assessed: ${formatTimestamp(record.lastAssessed)}._`);
+
+	return lines.join("\n");
+}
+
+function renderInProgressTemplate(record: ActionRecord, lane: LaneContext): string {
+	const since = lane.task.arbiterLastAssessed ?? record.lastAssessed;
+	const headline = `**In flight with ${lane.task.owner} since ${formatTimestamp(since)}**`;
+
+	const lines: string[] = [
+		"## Agent Assessment",
+		headline,
+		"",
+		`- **Current action**: ${record.action} (${ACTION_LABELS[record.action]})`,
+		`- **Confidence**: ${record.confidence}`,
+	];
+
+	for (const dim of orderForInProgress(lane.readiness.dimensions)) {
+		lines.push(...renderDimensionBlock(dim));
+	}
+
+	// Done-criteria checklist surfaces what to verify before marking done.
+	const doneCriteria = lane.task.sections.doneCriteria ?? [];
+	if (doneCriteria.length > 0) {
+		lines.push("");
+		lines.push("**Done criteria — verify before marking done:**");
+		for (const dc of doneCriteria) {
+			lines.push(`- [${dc.checked ? "x" : " "}] ${dc.text}`);
+		}
+	}
+
+	lines.push("");
+	lines.push("_Verify done criteria before moving to `done/`._");
+	lines.push(`_Last assessed: ${formatTimestamp(record.lastAssessed)}._`);
+
+	return lines.join("\n");
+}
+
+function renderDoneTemplate(record: ActionRecord, lane: LaneContext): string {
+	const headline = record.terminal
+		? `**${record.action} — terminal (${record.reason})**`
+		: `**${record.action} (${ACTION_LABELS[record.action]}) — recorded**`;
+
+	const lines: string[] = [
+		"## Agent Assessment",
+		headline,
+		"",
+		`- **Dispatched by**: ${lane.task.owner}`,
+		`- **Final confidence**: ${record.confidence}`,
+		`- **Reason**: ${record.reason}`,
+	];
+
+	// Snapshot of dimensions as-of-dispatch (no re-scoring framing).
+	lines.push("");
+	lines.push("**As-of-dispatch snapshot:**");
+	for (const dim of lane.readiness.dimensions) {
+		lines.push(...renderDimensionBlock(dim));
+	}
+
+	lines.push("");
+	lines.push("_Read-only audit footprint. Re-assessment does not overwrite (per ARC-002)._");
+	lines.push(`_Last assessed: ${formatTimestamp(record.lastAssessed)}._`);
+
+	return lines.join("\n");
 }
 
 function formatTimestamp(iso: string): string {

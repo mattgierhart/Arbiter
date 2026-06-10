@@ -48,7 +48,46 @@ export interface ReadinessDimension {
 	state: ReadinessState;
 	reason: string;
 	blockerType?: BlockerType;
+	/**
+	 * v0.6.0: structured evidence atoms paired with this dimension's state.
+	 * Optional — when present, the action-recorder prefers these for the
+	 * per-dimension breakdown in lane-aware templates. When absent, the
+	 * recorder falls back to `reason`. See PRD §13.4.
+	 */
+	evidence?: EvidenceAtom[];
 }
+
+/**
+ * v0.6.0: an atom of evidence that contributed to a dimension's state.
+ * Structured so the retro layer can compare "did Clarity evidence change
+ * between assessment N-1 and N?" without parsing freeform reason strings.
+ * See PRD §13.4 and OQ-017.
+ */
+export interface EvidenceAtom {
+	kind: "frontmatter" | "body-section" | "link" | "policy" | "missing";
+	/**
+	 * Where the evidence came from. Examples:
+	 *   "frontmatter.outcome"
+	 *   "body §Outcome (line 14)"
+	 *   "[[OTHER-TASK]]"
+	 *   "policy:dor-defaults.md"
+	 *   "missing: doneCriteria"
+	 */
+	ref: string;
+	/** Optional short freeform note (e.g. snippet of the matched text). */
+	note?: string;
+	/** Direction this atom pushes the dimension state. Lets the recorder pick ✅/⚠️/ℹ️ icons. */
+	polarity: "supports" | "blocks" | "neutral";
+}
+
+/**
+ * v0.6.0: workflow column derived from a task's file path, used by the
+ * lane-aware assessment templates. Resolution is path-based per OQ-016
+ * recommendation (file path wins; SYNC-001 board debounce reconciles
+ * Kanban.md). `unknown` is the safe fallback that renders the generic
+ * template. See PRD §13.5 + `column-resolver.ts`.
+ */
+export type WorkflowColumn = "proposed" | "next" | "in-progress" | "done" | "unknown";
 
 /** Full readiness assessment result */
 export interface ReadinessResult {
@@ -300,6 +339,16 @@ export interface ArbiterSettings {
 	 * whatever runner consumes them.
 	 */
 	agentDispatchHints?: AgentDispatchHints;
+
+	/**
+	 * v0.6.0: when true, the action-recorder renders lane-aware assessment
+	 * templates (gap analysis in `proposed/`, dispatch envelope in `next/`,
+	 * verification in `in-progress/`, audit footprint in `done/`). When false
+	 * or unset, the legacy v0.5.0 single-template rendering is used. Default
+	 * `true` — opt-out is the escape hatch for users who prefer the simpler
+	 * block. See PRD §13.2 component D and §13.6.
+	 */
+	laneAwareAssessments: boolean;
 }
 
 /**
@@ -333,6 +382,7 @@ export const DEFAULT_SETTINGS: ArbiterSettings = {
 	enableMachineLog: false,
 	syncProtocolEnabled: false,
 	boardDebounceMs: 60_000,
+	laneAwareAssessments: true,
 	// agentDispatchHints intentionally undefined by default — orchestrators apply their own.
 };
 

@@ -191,17 +191,27 @@ export default class ArbiterPlugin extends Plugin {
 			// Select action
 			const record = selectAction(task, readiness, policies, confidenceConfig);
 
+			// v0.6.0: resolve workflow column for lane-aware templates.
+			const { resolveWorkflowColumn } = await import("./column-resolver");
+			const column = resolveWorkflowColumn(file.path);
+
 			// Update the task note
-			const updatedContent = updateTaskContent(content, record, {
-				frontmatterPrefix: this.settings.frontmatterPrefix,
-				assessmentHeading: this.settings.assessmentHeading,
-			});
+			const updatedContent = updateTaskContent(
+				content,
+				record,
+				{
+					frontmatterPrefix: this.settings.frontmatterPrefix,
+					assessmentHeading: this.settings.assessmentHeading,
+					laneAwareAssessments: this.settings.laneAwareAssessments,
+				},
+				{ task, readiness, column },
+			);
 
 			await this.app.vault.modify(file, updatedContent);
 
 			// Write to machine log if enabled
 			if (this.settings.enableMachineLog) {
-				await this.writeToMachineLog(record, file.path);
+				await this.writeToMachineLog(record, file.path, readiness);
 			}
 
 			// Show notice (suppressed in silent mode for batch assess-all)
@@ -297,7 +307,11 @@ export default class ArbiterPlugin extends Plugin {
 	/**
 	 * Write an assessment event to the machine log.
 	 */
-	async writeToMachineLog(record: ActionRecord, taskPath: string) {
+	async writeToMachineLog(
+		record: ActionRecord,
+		taskPath: string,
+		readiness?: import("./types").ReadinessResult,
+	) {
 		const logFolder = normalizePath(this.settings.logFolderPath);
 		const logPath = normalizePath(`${logFolder}/assessment-log.md`);
 
@@ -307,7 +321,7 @@ export default class ArbiterPlugin extends Plugin {
 			await this.app.vault.createFolder(logFolder);
 		}
 
-		const entry = formatLogEntry(record, taskPath);
+		const entry = formatLogEntry(record, taskPath, readiness);
 
 		const existing = this.app.vault.getAbstractFileByPath(logPath);
 		if (existing instanceof TFile) {
