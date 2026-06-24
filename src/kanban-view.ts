@@ -1,8 +1,32 @@
-import { ItemView, Notice, TFile, TFolder, WorkspaceLeaf, normalizePath } from "obsidian";
+import {
+	App,
+	ItemView,
+	MarkdownRenderer,
+	Modal,
+	Notice,
+	TFile,
+	TFolder,
+	WorkspaceLeaf,
+	normalizePath,
+} from "obsidian";
 import type ArbiterPlugin from "./main";
-import type { ActionType, BlockerType, ConfidenceLevel, Priority, ReadinessColor } from "./types";
+import type {
+	ActionType,
+	BlockerType,
+	ConfidenceLevel,
+	PreconditionItem,
+	Priority,
+	ReadinessColor,
+} from "./types";
 import { parseTask } from "./task-parser";
 import { actionToColor, getDispatchQueue, type QueueTask } from "./dispatch-queue";
+import {
+	computeChecklistProgress,
+	deriveProject,
+	urgencyState,
+	type ChecklistProgress,
+	type UrgencyState,
+} from "./card-meta";
 
 /**
  * Arbiter Kanban View
@@ -95,6 +119,9 @@ interface KanbanTask extends QueueTask {
 	urgencyDate?: string;
 	capabilityPrimary?: string;
 	type?: string;
+	// v0.7.0 (prototype) — Trietment-inspired card surface
+	progress?: ChecklistProgress;
+	project?: string | null;
 	// v0.5.0 fields exposed for the Up Next filter + color mapping
 	mattApproved?: boolean;
 	priority?: Priority;
@@ -109,6 +136,12 @@ export class ArbiterKanbanView extends ItemView {
 	plugin: ArbiterPlugin;
 	private tasks: KanbanTask[] = [];
 	private refreshTimer: number | null = null;
+	/**
+	 * v0.7.0 (prototype) — active project facet filter.
+	 *   null = show All; "" = the "No project" bucket; else a project name.
+	 * Persists across auto-refreshes so a file save doesn't reset the filter.
+	 */
+	private activeProject: string | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: ArbiterPlugin) {
 		super(leaf);
@@ -224,6 +257,12 @@ export class ArbiterKanbanView extends ItemView {
 						urgencyDate: task.urgencyDate,
 						capabilityPrimary: task.capabilityPrimary,
 						type: task.type,
+						progress: computeChecklistProgress(task.sections),
+						project: deriveProject(
+							task.projectTag,
+							child.path,
+							this.plugin.settings.taskDiscoveryFolders,
+						),
 						mattApproved: task.mattApproved,
 						priority: task.priority,
 						taskRevision: task.taskRevision,
@@ -269,15 +308,24 @@ export class ArbiterKanbanView extends ItemView {
 		});
 		assessAllBtn.addEventListener("click", () => this.assessAll());
 
+		// v0.7.0 (prototype) — project facet chip strip (Trietment-inspired).
+		// Renders only when at least one task carries a project; clicking a chip
+		// filters the whole board + Up Next to that project.
+		this.renderFacets(container);
+
+		// Apply the active project filter once; both Up Next and the columns
+		// operate on the same visible set so counts stay consistent.
+		const visible = this.tasks.filter((t) => this.matchesFilter(t));
+
 		// v0.5.0 — "Up Next" strip: dispatchable cards, sorted by priority then urgency.
 		// A card is dispatchable when arbiter_action=EXE AND matt_approved=true AND
 		// the SYNC-001 revision pin is fresh. See dispatch-queue.ts.
-		this.renderUpNext(container);
+		this.renderUpNext(container, visible);
 
 		// Group tasks by column
 		const grouped: Record<string, KanbanTask[]> = {};
 		for (const col of COLUMN_ORDER) grouped[col] = [];
-		for (const task of this.tasks) {
+		for (const task of visible) {
 			const key = COLUMN_ORDER.includes(task.action) ? task.action : "UNASSESSED";
 			grouped[key].push(task);
 		}
@@ -291,9 +339,80 @@ export class ArbiterKanbanView extends ItemView {
 		// Footer with legend
 		const footer = container.createDiv({ cls: "arbiter-kanban-footer" });
 		footer.createEl("span", {
-			text: "Click a card to open the task note. Auto-refreshes on file changes. Cards show readiness color (green/yellow/red) on left border.",
+			text: "Click a card for details, receipts, and quick actions. Left border = readiness color (green/yellow/red); due-date chips tint red (overdue) / orange (today).",
 			cls: "arbiter-kanban-legend",
 		});
+	}
+
+	/**
+	 * v0.7.0 (prototype) — does a task pass the active project filter?
+	 *   null filter       → all tasks
+	 *   "" filter         → only tasks with no project (the "No project" bucket)
+	 *   project name      → only tasks in that project
+	 */
+	private matchesFilter(task: KanbanTask): boolean {
+		if (this.activeProject === null) return true;
+		if (this.activeProject === "") return !task.project;
+		return task.project === this.activeProject;
+	}
+
+	/**
+	 * v0.7.0 (prototype) — render the project facet chip strip.
+	 *
+	 * Trietment's clickable project badges, mapped onto Arbiter's deferred
+	 * "project facet" (PRD §12.7 / §13). Builds the distinct project set from
+	 * the derived `project` field, shows an "All" chip plus one per project
+	 * (with counts), and a "No project" bucket when some tasks are untagged.
+	 * Skips rendering entirely when no task carries a project — no noise for
+	 * single-project vaults.
+	 */
+	private renderFacets(container: HTMLElement): void {
+		// key "" = no-project bucket; other keys are project names.
+		const counts = new Map<string, number>();
+		for (const t of this.tasks) {
+			const key = t.project ?? "";
+			counts.set(key, (counts.get(key) ?? 0) + 1);
+		}
+
+		const namedProjects = [...counts.keys()].filter((k) => k !== "").sort();
+		// Nothing to facet on — every task is project-less. Don't show the strip.
+		// Also drop a now-stale filter so the board can't get stuck showing nothing.
+		if (namedProjects.length === 0) {
+			this.activeProject = null;
+			return;
+		}
+		// A previously-selected project disappeared (e.g. its last task was
+		// deleted). Reset to "All" so the user isn't stranded on an empty board.
+		if (
+			this.activeProject !== null &&
+			this.activeProject !== "" &&
+			!counts.has(this.activeProject)
+		) {
+			this.activeProject = null;
+		}
+
+		const strip = container.createDiv({ cls: "arbiter-kanban-facets" });
+		strip.createEl("span", { text: "Projects:", cls: "arbiter-kanban-facets-label" });
+
+		const makeChip = (label: string, value: string | null, count: number) => {
+			const chip = strip.createEl("button", { cls: "arbiter-kanban-facet" });
+			if (this.activeProject === value) chip.addClass("arbiter-kanban-facet-active");
+			chip.createSpan({ text: label, cls: "arbiter-kanban-facet-name" });
+			chip.createSpan({ text: String(count), cls: "arbiter-kanban-facet-count" });
+			chip.addEventListener("click", () => {
+				// Toggle off if the active chip is clicked again.
+				this.activeProject = this.activeProject === value ? null : value;
+				this.render();
+			});
+			return chip;
+		};
+
+		makeChip("All", null, this.tasks.length);
+		for (const name of namedProjects) {
+			makeChip(name, name, counts.get(name) ?? 0);
+		}
+		const noneCount = counts.get("") ?? 0;
+		if (noneCount > 0) makeChip("No project", "", noneCount);
 	}
 
 	/**
@@ -307,8 +426,8 @@ export class ArbiterKanbanView extends ItemView {
 	 * second board. Below 5: "no dispatchable tasks — toggle approval on a
 	 * green card to add" hint so the empty state is actionable.
 	 */
-	private renderUpNext(container: HTMLElement): void {
-		const queue = getDispatchQueue(this.tasks).slice(0, 5);
+	private renderUpNext(container: HTMLElement, tasks: KanbanTask[]): void {
+		const queue = getDispatchQueue(tasks).slice(0, 5);
 
 		const strip = container.createDiv({ cls: "arbiter-kanban-upnext" });
 		const stripHeader = strip.createDiv({ cls: "arbiter-kanban-upnext-header" });
@@ -346,12 +465,7 @@ export class ArbiterKanbanView extends ItemView {
 			card.addClass(`arbiter-kanban-card-priority-${task.priority}`);
 		}
 
-		card.addEventListener("click", async () => {
-			const file = this.app.vault.getAbstractFileByPath(task.path);
-			if (file instanceof TFile) {
-				await this.app.workspace.getLeaf(false).openFile(file);
-			}
-		});
+		card.addEventListener("click", () => this.openCardModal(task.path));
 
 		const titleEl = card.createDiv({ cls: "arbiter-kanban-upnext-card-title" });
 		if (task.priority && task.priority !== "normal") {
@@ -367,18 +481,48 @@ export class ArbiterKanbanView extends ItemView {
 			cls: "arbiter-kanban-chip arbiter-kanban-chip-approved",
 			text: "✅ approved",
 		});
-		if (task.urgencyDate) {
-			meta.createEl("span", {
-				cls: "arbiter-kanban-chip arbiter-kanban-chip-urgency",
-				text: `due ${task.urgencyDate}`,
-			});
-		}
+		this.renderProgressChip(meta, task.progress);
+		this.renderUrgencyChip(meta, task.urgencyDate);
 		if (task.capabilityPrimary) {
 			meta.createEl("span", {
 				cls: "arbiter-kanban-chip arbiter-kanban-chip-cap",
 				text: task.capabilityPrimary,
 			});
 		}
+	}
+
+	/**
+	 * v0.7.0 (prototype) — subtask progress badge (Trietment's `☑ 2/5`).
+	 * Sourced from the preconditions/execution-steps/done-criteria checklists
+	 * Arbiter already parses. Hidden when the task has no checklist items.
+	 * Fully-done tasks get a subtle "complete" tint.
+	 */
+	private renderProgressChip(parent: HTMLElement, progress?: ChecklistProgress): void {
+		if (!progress || progress.total === 0) return;
+		const done = progress.done === progress.total;
+		const chip = parent.createEl("span", {
+			cls: `arbiter-kanban-chip arbiter-kanban-chip-progress${
+				done ? " arbiter-kanban-chip-progress-done" : ""
+			}`,
+		});
+		chip.setText(`☑ ${progress.done}/${progress.total}`);
+		chip.setAttribute("title", `${progress.done} of ${progress.total} checklist items complete`);
+	}
+
+	/**
+	 * v0.7.0 (prototype) — due-date chip with Trietment-style time urgency
+	 * coloring: red when overdue, orange when due today, a soft warning within
+	 * the soon window, neutral otherwise.
+	 */
+	private renderUrgencyChip(parent: HTMLElement, urgencyDate?: string): void {
+		if (!urgencyDate) return;
+		const state: UrgencyState | null = urgencyState(urgencyDate, new Date());
+		const stateCls = state ? ` arbiter-kanban-chip-urgency-${state}` : "";
+		const chip = parent.createEl("span", {
+			cls: `arbiter-kanban-chip arbiter-kanban-chip-urgency${stateCls}`,
+		});
+		const prefix = state === "overdue" ? "⚠ overdue " : state === "today" ? "today " : "due ";
+		chip.setText(`${prefix}${urgencyDate}`);
 	}
 
 	private renderColumn(
@@ -437,14 +581,14 @@ export class ArbiterKanbanView extends ItemView {
 		if (task.priority && task.priority !== "normal") {
 			card.addClass(`arbiter-kanban-card-priority-${task.priority}`);
 		}
+		// v0.7.0 (prototype) — overdue tasks get a card-level accent regardless
+		// of readiness color, so a time crunch is visible at a glance.
+		if (urgencyState(task.urgencyDate, new Date()) === "overdue") {
+			card.addClass("arbiter-kanban-card-overdue");
+		}
 
-		// Click-to-open
-		card.addEventListener("click", async () => {
-			const file = this.app.vault.getAbstractFileByPath(task.path);
-			if (file instanceof TFile) {
-				await this.app.workspace.getLeaf(false).openFile(file);
-			}
-		});
+		// Click → detail modal ("the click reveals the receipts").
+		card.addEventListener("click", () => this.openCardModal(task.path));
 
 		// Title row — priority badge inline with title for scanability
 		const titleEl = card.createDiv({ cls: "arbiter-kanban-card-title" });
@@ -495,10 +639,8 @@ export class ArbiterKanbanView extends ItemView {
 			depth.setAttribute("title", "DEC-012 decomposition depth");
 		}
 
-		if (task.urgencyDate) {
-			const urgency = meta.createEl("span", { cls: "arbiter-kanban-chip arbiter-kanban-chip-urgency" });
-			urgency.setText(`due ${task.urgencyDate}`);
-		}
+		this.renderProgressChip(meta, task.progress);
+		this.renderUrgencyChip(meta, task.urgencyDate);
 
 		if (task.capabilityPrimary) {
 			const cap = meta.createEl("span", { cls: "arbiter-kanban-chip arbiter-kanban-chip-cap" });
@@ -515,6 +657,20 @@ export class ArbiterKanbanView extends ItemView {
 		}
 		const pathEl = footer.createEl("span", { cls: "arbiter-kanban-card-path" });
 		pathEl.setText(task.path);
+	}
+
+	/**
+	 * v0.7.0 (prototype) — open the card detail modal for a task path.
+	 * The modal surfaces the assessment receipts + quick actions, and calls
+	 * back to refresh the board after any mutating action.
+	 */
+	private openCardModal(path: string): void {
+		const file = this.app.vault.getAbstractFileByPath(path);
+		if (!(file instanceof TFile)) {
+			new Notice("Arbiter: task file not found.");
+			return;
+		}
+		new ArbiterCardModal(this.app, this.plugin, file, () => this.refresh()).open();
 	}
 
 	/**
@@ -548,5 +704,194 @@ export class ArbiterKanbanView extends ItemView {
 			`Arbiter: assessed ${assessed} of ${total}${failed > 0 ? `, ${failed} failed (see console)` : ""}.`,
 			6000
 		);
+	}
+}
+
+/**
+ * v0.7.0 (prototype) — Card detail modal.
+ *
+ * Trietment's click-to-edit modal, reframed for Arbiter's "the eye trusts the
+ * 3 colors; the click reveals the receipts" theme (PRD §13). Click any card to
+ * see the assessment rationale, the checklist breakdown, and one-gesture quick
+ * actions (Open / Reassess / Approve / Cycle priority) — without leaving the
+ * board. Re-reads the file on every render so it always reflects current state,
+ * and calls `onChange` to refresh the board after any mutating action.
+ *
+ * Note: the quick actions only touch human-owned fields (matt_approved,
+ * priority) or re-run the assessor. The modal never hand-edits `arbiter_action`
+ * — the column a card sits in stays a computed output, not a draggable state.
+ */
+class ArbiterCardModal extends Modal {
+	private plugin: ArbiterPlugin;
+	private file: TFile;
+	private onChange: () => void;
+
+	constructor(app: App, plugin: ArbiterPlugin, file: TFile, onChange: () => void) {
+		super(app);
+		this.plugin = plugin;
+		this.file = file;
+		this.onChange = onChange;
+	}
+
+	async onOpen(): Promise<void> {
+		this.modalEl.addClass("arbiter-card-modal");
+		await this.renderBody();
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+
+	private async renderBody(): Promise<void> {
+		const { contentEl } = this;
+		contentEl.empty();
+
+		let content: string;
+		try {
+			content = await this.app.vault.read(this.file);
+		} catch {
+			contentEl.setText("Arbiter: could not read task file.");
+			return;
+		}
+		const task = parseTask(content, this.file.path);
+
+		// --- Title row (priority badge + title) ---
+		const titleRow = contentEl.createDiv({ cls: "arbiter-card-modal-title" });
+		if (task.priority && task.priority !== "normal") {
+			titleRow.createSpan({
+				cls: `arbiter-kanban-priority-badge arbiter-kanban-priority-${task.priority}`,
+				text: task.priority === "urgent" ? "🔥" : task.priority === "high" ? "⬆" : "⬇",
+			});
+		}
+		titleRow.appendText(task.title || this.file.basename);
+
+		// --- Status chips ---
+		const chips = contentEl.createDiv({ cls: "arbiter-card-modal-chips" });
+		const action = task.arbiterAction ?? "UNASSESSED";
+		chips
+			.createEl("span", {
+				cls: `arbiter-kanban-chip arbiter-kanban-card-color-${actionToColor(action)}`,
+			})
+			.setText(action);
+		if (task.arbiterConfidence) {
+			chips.createEl("span", {
+				cls: `arbiter-kanban-chip arbiter-kanban-chip-conf-${task.arbiterConfidence}`,
+				text: task.arbiterConfidence,
+			});
+		}
+		if (task.arbiterBlockerType && task.arbiterBlockerType !== "none") {
+			chips.createEl("span", {
+				cls: "arbiter-kanban-chip arbiter-kanban-chip-blocker",
+				text: task.arbiterBlockerType,
+			});
+		}
+		if (task.mattApproved) {
+			chips.createEl("span", {
+				cls: "arbiter-kanban-chip arbiter-kanban-chip-approved",
+				text: "✅ approved",
+			});
+		}
+		if (task.arbiterNeedsHuman) {
+			chips.createEl("span", {
+				cls: "arbiter-kanban-chip arbiter-kanban-chip-human",
+				text: "👤 needs human",
+			});
+		}
+		if (task.urgencyDate) {
+			const st = urgencyState(task.urgencyDate, new Date());
+			chips.createEl("span", {
+				cls: `arbiter-kanban-chip arbiter-kanban-chip-urgency${
+					st ? ` arbiter-kanban-chip-urgency-${st}` : ""
+				}`,
+				text: `due ${task.urgencyDate}`,
+			});
+		}
+
+		// --- Checklists ---
+		this.renderChecklist(contentEl, "Preconditions", task.sections.preconditions);
+		this.renderChecklist(contentEl, "Execution Steps", task.sections.executionSteps);
+		this.renderChecklist(contentEl, "Done Criteria", task.sections.doneCriteria);
+
+		// --- Assessment receipts ---
+		const receipts = contentEl.createDiv({ cls: "arbiter-card-modal-receipts" });
+		receipts.createEl("h4", { text: "Agent Assessment" });
+		if (task.sections.agentAssessment) {
+			const body = receipts.createDiv({ cls: "arbiter-card-modal-receipts-body" });
+			try {
+				await MarkdownRenderer.render(
+					this.app,
+					task.sections.agentAssessment,
+					body,
+					this.file.path,
+					this.plugin,
+				);
+			} catch {
+				body.createEl("pre", { text: task.sections.agentAssessment });
+			}
+		} else {
+			receipts.createDiv({
+				cls: "arbiter-card-modal-empty",
+				text: "No assessment yet — run Reassess to generate one.",
+			});
+		}
+
+		// --- Quick actions ---
+		const actions = contentEl.createDiv({ cls: "arbiter-card-modal-actions" });
+
+		const openBtn = actions.createEl("button", { cls: "arbiter-kanban-btn", text: "Open note" });
+		openBtn.addEventListener("click", async () => {
+			await this.app.workspace.getLeaf(false).openFile(this.file);
+			this.close();
+		});
+
+		const reassessBtn = actions.createEl("button", {
+			cls: "arbiter-kanban-btn arbiter-kanban-btn-primary",
+			text: "▶ Reassess",
+		});
+		reassessBtn.addEventListener("click", async () => {
+			await this.plugin.assessFile(this.file);
+			this.onChange();
+			await this.renderBody();
+		});
+
+		const approveBtn = actions.createEl("button", {
+			cls: "arbiter-kanban-btn",
+			text: task.mattApproved ? "◯ Unapprove" : "✅ Approve",
+		});
+		approveBtn.addEventListener("click", async () => {
+			await this.plugin.toggleApproved(this.file);
+			this.onChange();
+			await this.renderBody();
+		});
+
+		const priorityBtn = actions.createEl("button", {
+			cls: "arbiter-kanban-btn",
+			text: `Priority: ${task.priority ?? "normal"} ⟳`,
+		});
+		priorityBtn.addEventListener("click", async () => {
+			await this.plugin.cyclePriority(this.file);
+			this.onChange();
+			await this.renderBody();
+		});
+	}
+
+	/** Render one checklist section (read-only) with a done/total header. */
+	private renderChecklist(
+		parent: HTMLElement,
+		label: string,
+		items?: PreconditionItem[],
+	): void {
+		if (!items || items.length === 0) return;
+		const done = items.filter((i) => i.checked).length;
+		const section = parent.createDiv({ cls: "arbiter-card-modal-checklist" });
+		section.createEl("h4", { text: `${label} (${done}/${items.length})` });
+		const list = section.createEl("ul", { cls: "arbiter-card-modal-checklist-items" });
+		for (const item of items) {
+			list
+				.createEl("li", {
+					cls: item.checked ? "arbiter-checked" : "arbiter-unchecked",
+				})
+				.setText(`${item.checked ? "☑" : "☐"} ${item.text}`);
+		}
 	}
 }

@@ -422,11 +422,11 @@ applies_to: "*"
 	 * even a green-readiness card should not auto-dispatch without explicit
 	 * Matt approval (per OQ-015).
 	 */
-	async toggleApproved(): Promise<void> {
-		const file = this.app.workspace.getActiveFile();
+	async toggleApproved(target?: TFile): Promise<boolean | undefined> {
+		const file = target ?? this.app.workspace.getActiveFile();
 		if (!file) {
 			new Notice("Arbiter: No active file.");
-			return;
+			return undefined;
 		}
 		const content = await this.app.vault.read(file);
 		const task = parseTask(content, file.path);
@@ -434,6 +434,7 @@ applies_to: "*"
 		const updated = setFrontmatterField(content, "matt_approved", next);
 		await this.app.vault.modify(file, updated);
 		new Notice(`Arbiter: ${next ? "✅ approved" : "◯ unapproved"} — ${file.basename}`);
+		return next;
 	}
 
 	/**
@@ -442,11 +443,11 @@ applies_to: "*"
 	 * Drives "Up Next" sort order (urgent first). Does NOT affect Arbiter's
 	 * readiness assessment.
 	 */
-	async cyclePriority(): Promise<void> {
-		const file = this.app.workspace.getActiveFile();
+	async cyclePriority(target?: TFile): Promise<Priority | undefined> {
+		const file = target ?? this.app.workspace.getActiveFile();
 		if (!file) {
 			new Notice("Arbiter: No active file.");
-			return;
+			return undefined;
 		}
 		const content = await this.app.vault.read(file);
 		const task = parseTask(content, file.path);
@@ -458,6 +459,7 @@ applies_to: "*"
 		const icon =
 			next === "urgent" ? "🔥" : next === "high" ? "⬆" : next === "low" ? "⬇" : "·";
 		new Notice(`Arbiter: ${icon} priority = ${next} — ${file.basename}`);
+		return next;
 	}
 
 	/**
