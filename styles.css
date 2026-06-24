@@ -454,3 +454,204 @@
 .arbiter-kanban-card-approved {
 	background: rgba(0, 200, 83, 0.04);
 }
+
+/* ============================================================
+   v0.7.0 (prototype) — Trietment-inspired card surface
+   ============================================================ */
+
+/* --- Project facet chip strip --- */
+
+.arbiter-kanban-facets {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 16px;
+	background: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+	flex-shrink: 0;
+}
+
+.arbiter-kanban-facets-label {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	font-weight: var(--font-semibold);
+	margin-right: 2px;
+}
+
+.arbiter-kanban-facet {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 10px;
+	border-radius: 12px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--interactive-normal);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	cursor: pointer;
+}
+
+.arbiter-kanban-facet:hover {
+	background: var(--interactive-hover);
+	color: var(--text-normal);
+}
+
+.arbiter-kanban-facet-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-color: var(--interactive-accent);
+}
+
+.arbiter-kanban-facet-count {
+	background: var(--background-primary);
+	color: var(--text-muted);
+	border-radius: 10px;
+	padding: 0 6px;
+	font-size: 10px;
+	font-weight: var(--font-semibold);
+}
+
+.arbiter-kanban-facet-active .arbiter-kanban-facet-count {
+	background: rgba(255, 255, 255, 0.25);
+	color: var(--text-on-accent);
+}
+
+/* --- Subtask progress badge (☑ done/total) --- */
+
+.arbiter-kanban-chip-progress {
+	background: rgba(33, 150, 243, 0.14);
+	color: var(--color-blue);
+	text-transform: none;
+	font-variant-numeric: tabular-nums;
+}
+
+.arbiter-kanban-chip-progress-done {
+	background: rgba(0, 200, 83, 0.18);
+	color: var(--color-green);
+}
+
+/* --- Time-urgency chip coloring (Trietment: red overdue / orange today) --- */
+
+.arbiter-kanban-chip-urgency-overdue {
+	background: rgba(244, 67, 54, 0.20);
+	color: var(--color-red);
+	font-weight: var(--font-bold);
+}
+
+.arbiter-kanban-chip-urgency-today {
+	background: rgba(255, 152, 0, 0.20);
+	color: var(--color-orange);
+	font-weight: var(--font-semibold);
+}
+
+.arbiter-kanban-chip-urgency-soon {
+	background: rgba(255, 193, 7, 0.14);
+	color: var(--color-yellow);
+}
+
+.arbiter-kanban-chip-urgency-future {
+	background: var(--background-modifier-border);
+	color: var(--text-muted);
+}
+
+/* Overdue card accent — a thin red ring independent of readiness color */
+.arbiter-kanban-card-overdue {
+	box-shadow: inset 0 0 0 1px rgba(244, 67, 54, 0.35);
+}
+
+/* ============================================================
+   v0.7.0 (prototype) — Card detail modal
+   ============================================================ */
+
+.arbiter-card-modal {
+	max-width: 640px;
+}
+
+.arbiter-card-modal .arbiter-card-modal-title {
+	font-size: var(--font-ui-large);
+	font-weight: var(--font-bold);
+	line-height: 1.3;
+	margin-bottom: 10px;
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+}
+
+.arbiter-card-modal-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-bottom: 14px;
+}
+
+.arbiter-card-modal-checklist {
+	margin: 10px 0;
+}
+
+.arbiter-card-modal-checklist h4 {
+	margin: 0 0 4px;
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+}
+
+.arbiter-card-modal-checklist-items {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.arbiter-card-modal-checklist-items li {
+	font-size: var(--font-ui-small);
+	line-height: 1.5;
+	padding: 1px 0;
+}
+
+.arbiter-card-modal-checklist-items li.arbiter-checked {
+	color: var(--text-muted);
+	text-decoration: line-through;
+	text-decoration-color: var(--text-faint);
+}
+
+.arbiter-card-modal-receipts {
+	margin: 14px 0;
+	padding: 12px;
+	background: var(--background-secondary);
+	border-radius: var(--radius-m);
+	border: 1px solid var(--background-modifier-border);
+}
+
+.arbiter-card-modal-receipts h4 {
+	margin: 0 0 6px;
+	font-size: var(--font-ui-small);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-muted);
+}
+
+.arbiter-card-modal-receipts-body {
+	font-size: var(--font-ui-small);
+	max-height: 280px;
+	overflow-y: auto;
+}
+
+.arbiter-card-modal-receipts-body pre {
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-size: var(--font-ui-smaller);
+}
+
+.arbiter-card-modal-empty {
+	font-size: var(--font-ui-small);
+	color: var(--text-faint);
+	font-style: italic;
+}
+
+.arbiter-card-modal-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 16px;
+	padding-top: 14px;
+	border-top: 1px solid var(--background-modifier-border);
+}
